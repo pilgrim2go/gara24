@@ -80,6 +80,7 @@ bundle: ## Đóng gói cả repo thành một file để gửi kèm chat (khi kh
 patch-apply: ## Áp patch từ Claude: make patch-apply P=0003-xyz.patch
 	@[[ -n "$(P)" ]] || { echo "Cần P=<file.patch>"; exit 1; }
 	@git diff --quiet && git diff --cached --quiet || { echo "Cây làm việc chưa sạch"; exit 1; }
+	@test -x node_modules/.bin/wrangler || { echo "Chưa cài phụ thuộc nên không chạy được test sau khi áp. Chạy: make install"; exit 1; }
 	@base=$$(sed -n 's/^base-commit: //p' "$(P)" | head -1); \
 	 if [[ -n "$$base" ]] && ! git merge-base --is-ancestor "$$base" HEAD; then \
 	   echo "Patch dựa trên $$base, commit này không có trong nhánh hiện tại. git pull trước."; exit 1; fi
