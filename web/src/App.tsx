@@ -6,8 +6,9 @@ import { Board } from './screens/Board';
 import { OrderScreen } from './screens/Order';
 import { NewOrder } from './screens/NewOrder';
 import { Reports } from './screens/Reports';
+import { Monthly } from './screens/Monthly';
 
-// Định tuyến bằng hash: #/board, #/orders/<id>, #/new, #/reports
+// Định tuyến bằng hash: #/board, #/orders/<id>, #/new, #/reports, #/monthly
 function useRoute() {
   const [hash, setHash] = useState(location.hash || '#/board');
   useEffect(() => {
@@ -41,6 +42,7 @@ export function App() {
     { key: 'board', label: 'Điều phối', show: true },
     { key: 'new', label: 'Lệnh mới', show: can('wo.create') },
     { key: 'reports', label: 'Báo cáo', show: can('dashboard.read') },
+    { key: 'monthly', label: 'Lãi gộp tháng', show: can('dashboard.read') },
   ].filter((n) => n.show);
   const active = screen === 'orders' ? 'board' : screen;
 
@@ -63,6 +65,7 @@ export function App() {
         {screen === 'orders' && id ? <OrderScreen id={id} me={u} />
           : screen === 'new' && can('wo.create') ? <NewOrder />
           : screen === 'reports' && can('dashboard.read') ? <Reports />
+          : screen === 'monthly' && can('dashboard.read') ? <Monthly />
           : <Board me={u} />}
       </main>
     </div>

@@ -47,7 +47,7 @@ export function Reports() {
           </table>
         </div>
       )}
-      <p className="fine">Lãi theo tháng cần doanh thu và giá vốn theo lệnh hoàn thành; phần này có khi luồng hoàn thành ghi vào bảng tổng hợp.</p>
+      <p className="fine">Doanh thu, giá vốn và lãi gộp theo lệnh hoàn thành xem ở trang <a href="#/monthly">Lãi gộp tháng</a>.</p>
     </section>
   );
 }

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import {
-  api, ApiError, devUser, vnd, qty, timeVN, since, errorText, STATUS_LABEL, PAY_LABEL, HOLD_LABEL, NEXT,
-  type Me, type Order, type Item, type Intent, type AuditEntry, type Line,
+  api, ApiError, devUser, vnd, qty, timeVN, dateTimeVN, pct, since, errorText, STATUS_LABEL, PAY_LABEL, HOLD_LABEL, NEXT,
+  type Me, type Order, type OrderEvent, type Item, type Intent, type AuditEntry, type Line,
 } from '../api';
 import { Plate, useAsync, ErrorNote, Dialog, useAction } from '../ui/kit';
 
@@ -12,6 +12,29 @@ const ACTION_LABEL: Record<string, string> = {
   create: 'Tạo lệnh', add_lines: 'Thêm hạng mục', issue: 'Xuất kho', cancel: 'Hủy lệnh', reopen: 'Mở lại lệnh',
   hold_start: 'Báo chờ', hold_end: 'Hết chờ',
 };
+const LOCK_LABEL: Record<string, string> = { paid: 'đã thu đủ tiền', invoice: 'đã có hóa đơn điện tử' };
+
+// Một mốc trên dòng thời gian: câu ngắn theo ngôn ngữ xưởng, không lộ mã kỹ thuật
+function eventText(e: OrderEvent): string {
+  const st = (v: string | null) => (v ? STATUS_LABEL[v] ?? v : '');
+  if (e.kind === 'status') {
+    if (!e.from_value) return `Tạo lệnh (${st(e.to_value)})`;
+    if (e.to_value === 'cancelled') return 'Hủy lệnh';
+    if (e.from_value === 'qc' && e.to_value === 'in_progress') return 'Kiểm tra chưa đạt, trả lại thợ';
+    if (e.to_value === 'delivered') return 'Bàn giao xe (hoàn thành lệnh)';
+    return `${st(e.from_value)} → ${st(e.to_value)}`;
+  }
+  if (e.kind === 'lock') return `Khóa lệnh${e.to_value && LOCK_LABEL[e.to_value] ? `: ${LOCK_LABEL[e.to_value]}` : ''}`;
+  return 'Mở khóa lệnh';   // 'unlock' và 'reopen'
+}
+// Lý do hủy lưu dạng "MÃ: giải thích"; đổi mã sang chữ
+function reasonText(r: string | null): string | null {
+  if (!r) return null;
+  const m = /^([A-Z_]+): (.*)$/s.exec(r);
+  const label = m ? CANCEL_REASONS.find(([k]) => k === m[1])?.[1] : undefined;
+  return label ? `${label}. ${m![2]}` : r;
+}
+
 type Dlg = null | 'line' | 'issue' | 'qr' | 'hold' | 'cancel' | 'reopen';
 
 export function OrderScreen({ id, me }: { id: string; me: Me }) {
@@ -54,6 +77,7 @@ export function OrderScreen({ id, me }: { id: string; me: Me }) {
         <div className="order-id">
           <h1>{o.order_no ?? 'Lệnh chưa có số'}</h1>
           <p>{[o.vehicle.make, o.vehicle.model, o.vehicle.model_year].filter(Boolean).join(' ')}. Vào xưởng {timeVN(o.received_at)}{o.promised_at ? `, hẹn giao ${timeVN(o.promised_at)}` : ''}.</p>
+          {o.completed_at !== null && <p className="order-done">Hoàn thành (giao xe) lúc <time dateTime={new Date(o.completed_at).toISOString()}>{dateTimeVN(o.completed_at)}</time></p>}
         </div>
         <div className="order-badges">
           <span className={`badge badge-pay-${o.payment_status}`}>{PAY_LABEL[o.payment_status]}</span>
@@ -118,12 +142,30 @@ export function OrderScreen({ id, me }: { id: string; me: Me }) {
               </table>
             </div>
           )}
+          {o.events.length > 0 && (
+            <>
+              <h2>Dòng thời gian</h2>
+              <ol className="timeline">
+                {o.events.map((e, i) => {
+                  const r = reasonText(e.reason);
+                  return (
+                    <li key={i} className={`tl tl-${e.kind}${e.to_value === 'cancelled' ? ' tl-cancel' : ''}`}>
+                      <time dateTime={new Date(e.at).toISOString()}>{dateTimeVN(e.at)}</time>
+                      <span className="tl-what">{eventText(e)}</span>
+                      <span className="tl-who">{e.by_name}</span>
+                      {r && <span className="tl-why">Lý do: {r}</span>}
+                    </li>
+                  );
+                })}
+              </ol>
+            </>
+          )}
           {can('audit.read') && (
             <>
               <h2>Nhật ký</h2>
               <ol className="log">
                 {(audit.data ?? []).slice().reverse().map((a, i) => (
-                  <li key={i}><time>{timeVN(a.at)}</time> {ACTION_LABEL[a.action] ?? a.action} <span className="log-who">{a.actor_id.replace(/^u-/, '')}</span>{a.reason ? `: ${a.reason}` : ''}</li>
+                  <li key={i}><time>{timeVN(a.at)}</time> {ACTION_LABEL[a.action] ?? a.action} <span className="log-who">{a.actor_name}</span>{a.reason ? `: ${a.reason}` : ''}</li>
                 ))}
               </ol>
             </>
@@ -148,7 +190,7 @@ export function OrderScreen({ id, me }: { id: string; me: Me }) {
               <dl className="sums">
                 <div><dt>Giá vốn phụ tùng</dt><dd>{vnd(o.cost.parts_cost_vnd)}</dd></div>
                 <div className="sum-total"><dt>Lãi gộp</dt><dd className={o.cost.gross_profit_vnd < 0 ? 'neg' : ''}>{vnd(o.cost.gross_profit_vnd)}</dd></div>
-                {o.cost.margin_bp !== null && <div><dt>Biên</dt><dd>{(o.cost.margin_bp / 100).toFixed(1).replace('.', ',')}%</dd></div>}
+                {o.cost.margin_bp !== null && <div><dt>Biên</dt><dd>{pct(o.cost.margin_bp)}</dd></div>}
               </dl>
               <p className="fine">Chưa gồm VAT và chi phí vận hành. Chỉ chủ gara, quản lý, thủ kho, kế toán, nhà đầu tư thấy phần này.</p>
             </section>

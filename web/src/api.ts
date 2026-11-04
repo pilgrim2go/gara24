@@ -37,20 +37,32 @@ export const api = {
 // ---------------------------------------------------------------- kiểu dữ liệu (khớp src/api/views.ts)
 export type Me = { user_id: string; email: string; full_name: string; branch_id: string; branch_name: string; roles: string[]; sees_cost: boolean; perms: string[] };
 export type Line = { id: string; line_no: number; line_type: 'labor' | 'part' | 'sublet' | 'fee'; item_id: string | null; description: string; qty_m: number; unit_price_vnd: number; gross_vnd: number; discount_vnd: number; net_vnd: number; issued_qty_m: number; status: 'active' | 'cancelled' };
+// Lịch sử trạng thái/khóa của lệnh (work_order_events). by_name: tên người, 'Hệ thống' khi Worker tự ghi.
+export type OrderEvent = { at: number; kind: 'status' | 'lock' | 'unlock' | 'reopen'; from_value: string | null; to_value: string | null; by_id: string; by_name: string; reason: string | null };
 export type Hold = { id: string; reason: string; started_at: number; note: string | null };
 export type Order = {
   id: string; order_no: string | null; status: string; payment_status: string; vehicle_id: string; plate: string | null;
   received_at: number; promised_at: number | null; labor_gross_vnd: number; parts_gross_vnd: number; discount_vnd: number; grand_total_vnd: number; paid_vnd: number;
-  locked_at: number | null; lock_reason: string | null; version: number; vehicle: { make: string | null; model: string | null; model_year: number | null };
-  hold: Hold | null; lines: Line[];
+  locked_at: number | null; lock_reason: string | null; completed_at: number | null; completed_biz_date: string | null;
+  version: number; vehicle: { make: string | null; model: string | null; model_year: number | null };
+  hold: Hold | null; lines: Line[]; events: OrderEvent[];
   cost?: { parts_cost_vnd: number; cost_status: 'final' | 'provisional'; gross_profit_vnd: number; margin_bp: number | null };
   stock_moves?: Array<{ move_id: string; doc_no: string; item_id: string; qty_delta_m: number; total_cost_vnd: number; cost_status: string; biz_date: string }>;
 };
 export type OrderListItem = { id: string; order_no: string | null; status: string; payment_status: string; plate: string | null; make: string | null; model: string | null; received_at: number; promised_at: number | null; grand_total_vnd: number; paid_vnd: number; locked_at: number | null; version: number; hold_reason: string | null; hold_started_at: number | null };
 export type Vehicle = { id: string; plate: string | null; vin: string | null; make: string | null; model: string | null; model_year: number | null };
 export type Item = { id: string; code: string; name: string; item_type: string; uom: string; default_price_vnd: number | null; on_hand_qty_m: number };
-export type AuditEntry = { at: number; actor_id: string; action: string; reason: string | null; changes: unknown };
-export type DailyStats = { biz_date: string; orders_received: number; orders_cancelled: number; collected_vnd: number; qr_in_vnd: number; cash_in_vnd: number; refund_out_vnd: number; stock_in_value_vnd: number; stock_out_value_vnd: number; cogs_completed_vnd: number; rev_labor_completed_vnd: number; rev_parts_completed_vnd: number };
+export type AuditEntry = { at: number; actor_id: string; actor_name: string; action: string; reason: string | null; changes: unknown };
+export type DailyStats = {
+  biz_date: string; orders_received: number; orders_cancelled: number; orders_completed: number;
+  collected_vnd: number; qr_in_vnd: number; cash_in_vnd: number; refund_out_vnd: number; stock_in_value_vnd: number; stock_out_value_vnd: number;
+  cogs_completed_vnd: number; rev_labor_completed_vnd: number; rev_parts_completed_vnd: number; discount_completed_vnd: number; cogs_provisional_vnd: number;
+};
+// Lãi gộp tháng (GET /api/dashboard/monthly), ghi nhận theo ngày hoàn thành lệnh. margin_bp: phần vạn, null khi doanh thu thuần <= 0.
+export type MonthlyStats = {
+  month: string; orders_completed: number; rev_labor_completed_vnd: number; rev_parts_completed_vnd: number; discount_completed_vnd: number;
+  net_revenue_vnd: number; cogs_completed_vnd: number; cogs_provisional_vnd: number; gross_profit_vnd: number; margin_bp: number | null; collected_vnd: number;
+};
 export type Intent = { intent_id: string; transfer_ref: string; amount_vnd: number; expires_at: number };
 
 // ---------------------------------------------------------------- từ ngữ hiển thị
@@ -111,4 +123,12 @@ export function since(ms: number, now = Date.now()) {
   if (h < 24) return `${h} giờ`;
   return `${Math.floor(h / 24)} ngày`;
 }
+// Có cả năm: dùng cho mốc cần đối chiếu lâu dài (hoàn thành, dòng thời gian)
+const TFY = new Intl.DateTimeFormat('en-GB', { timeZone: VN, hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit', year: 'numeric', hour12: false });
+export const dateTimeVN = (ms: number) => {
+  const p = Object.fromEntries(TFY.formatToParts(ms).map((x) => [x.type, x.value]));
+  return `${p.hour}:${p.minute}, ${p.day}/${p.month}/${p.year}`;
+};
+// Biên lãi từ phần vạn: 1234 -> "12,3%"
+export const pct = (bp: number | null) => (bp === null ? '—' : `${(bp / 100).toFixed(1).replace('.', ',')}%`);
 export const todayVN = () => new Intl.DateTimeFormat('en-CA', { timeZone: VN }).format(Date.now());
