@@ -23,6 +23,7 @@ Mỗi chat làm đúng một làn và chỉ sửa file thuộc làn đó. Bản 
 | --- | --- | --- |
 | core | `src/`, `migrations/`, `test/`, `package.json`, `package-lock.json`, `wrangler.jsonc`, `drizzle.config.ts` | Chỉ một chat core tại một thời điểm, vì migration và lockfile đánh số tuần tự |
 | ops | `Makefile`, `scripts/`, `docs/ops/` | Không sửa `package.json`; cần script npm mới thì ghi yêu cầu vào mẩu changelog cho làn core |
+| web | `web/` | Giao diện React + Vite. Gói npm riêng trong `web/package.json`; cần API mới thì ghi yêu cầu cho làn core |
 | user | `docs/user/` | Mô tả theo vai và luồng nghiệp vụ, không dùng thuật ngữ kỹ thuật |
 | design | `docs/design/` | Ghi chú thiết kế, kết quả thử nghiệm, link Claude Docs |
 | meta | `README.md`, `AGENTS.md`, `.lanes`, `docs/README.md`, `.gitignore` | Chỉ sửa khi prompt ghi rõ làn meta |

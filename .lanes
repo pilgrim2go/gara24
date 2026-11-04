@@ -6,6 +6,7 @@ ops       Makefile
 ops       scripts/
 ops       docs/ops/
 user      docs/user/
+web       web/
 design    docs/design/
 meta      README.md
 meta      AGENTS.md
