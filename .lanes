@@ -1,0 +1,22 @@
+# Bản đồ làn (lane) -> đường dẫn. Mỗi patch chỉ được chạm vào MỘT làn (cộng thêm changes/).
+# Khớp theo tiền tố đường dẫn. Dòng đầu tiên khớp sẽ thắng.
+# Kiểm bằng: scripts/check-lanes.sh <patch-file | rev-range>
+changes   changes/
+ops       Makefile
+ops       scripts/
+ops       docs/ops/
+user      docs/user/
+design    docs/design/
+meta      README.md
+meta      AGENTS.md
+meta      .lanes
+meta      docs/README.md
+meta      .gitignore
+core      src/
+core      migrations/
+core      test/
+core      package.json
+core      package-lock.json
+core      wrangler.jsonc
+core      drizzle.config.ts
+core      .dev.vars.example
