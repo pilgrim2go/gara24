@@ -41,6 +41,8 @@ const CONSTRAINT_CODES: Array<[RegExp, string]> = [
   [/issued_within_line/, 'ISSUE_EXCEEDS_LINE'],
   [/move_cost_non_negative/, 'NEGATIVE_MOVE_COST'],
   [/NOT NULL constraint failed: work_orders\.lock_policy/, 'SETTING_MISSING'],
+  [/UNIQUE constraint failed: vehicle_plates\.plate_norm/, 'PLATE_EXISTS'],
+  [/UNIQUE constraint failed: vehicles\.vin/, 'VIN_EXISTS'],
   [/FOREIGN KEY constraint failed/, 'FOREIGN_KEY'],
 ];
 

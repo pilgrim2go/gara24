@@ -1,1 +1,3 @@
 PROBE_TOKEN="doi-thanh-chuoi-ngau-nhien"
+# Chỉ dùng local: đăng nhập demo bằng header x-dev-user-email. Không bao giờ đặt trên môi trường deploy.
+DEV_AUTH="1"

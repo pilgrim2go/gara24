@@ -3,7 +3,8 @@ import { drizzle } from 'drizzle-orm/d1';
 import { and, eq, asc, gte, lte, desc } from 'drizzle-orm';
 import { z } from 'zod';
 import * as s from '../db/schema.ts';
-import { type D1, BizError, uuidv7 } from '../lib.ts';
+import { type D1, BizError, uuidv7, runBatch, audit, guardExists, guardNotExists } from '../lib.ts';
+import { registerDev } from './dev.ts';
 import * as ops from '../ops.ts';
 import { type Actor, type Perm, PERMS, can, seesCost, verifyAccessJwt, resolveActor } from './auth.ts';
 import * as v from './views.ts';
@@ -83,6 +84,8 @@ export function api() {
     }
   });
 
+  registerDev(app);
+
   // ------------------------------------------------------------ xác thực cho /api/*
   app.use('/api/*', async (c, next) => {
     let email: string | undefined;
@@ -98,6 +101,78 @@ export function api() {
     if ('error' in actor) return c.json({ error: actor.error }, actor.error === 'branch_required' ? 400 : 403);
     c.set('actor', actor);
     await next();
+  });
+
+  // ------------------------------------------------------------ người dùng hiện tại, danh mục
+  app.get('/api/me', async (c) => {
+    const a = c.get('actor');
+    const u = await c.env.DB.prepare(`SELECT u.full_name, b.name AS branch_name FROM users u JOIN branches b ON b.id = ?2 WHERE u.id = ?1`)
+      .bind(a.userId, a.branchId).first<{ full_name: string; branch_name: string }>();
+    return c.json(v.MeView.parse({
+      user_id: a.userId, email: a.email, full_name: u!.full_name, branch_id: a.branchId, branch_name: u!.branch_name,
+      roles: a.roles, sees_cost: seesCost(a), perms: (Object.keys(PERMS) as Perm[]).filter((p) => can(a, p)),
+    }));
+  });
+
+  // Bảng điều phối: lệnh đang mở của chi nhánh, không có giá vốn
+  app.get('/api/work-orders', async (c) => {
+    need(c, 'wo.read');
+    const a = c.get('actor');
+    const scope = c.req.query('scope') === 'all' ? 'all' : 'open';
+    const { results } = await c.env.DB.prepare(`
+      SELECT w.id, w.order_no, w.status, w.payment_status, w.received_at, w.promised_at, w.grand_total_vnd, w.paid_vnd, w.locked_at, w.version,
+             v.make, v.model,
+             (SELECT reason FROM work_order_holds h WHERE h.work_order_id = w.id AND h.ended_at IS NULL LIMIT 1) AS hold_reason,
+             (SELECT started_at FROM work_order_holds h WHERE h.work_order_id = w.id AND h.ended_at IS NULL LIMIT 1) AS hold_started_at,
+             (SELECT plate_display FROM vehicle_plates p WHERE p.vehicle_id = w.vehicle_id ORDER BY valid_from DESC LIMIT 1) AS plate
+      FROM work_orders w JOIN vehicles v ON v.id = w.vehicle_id
+      WHERE w.branch_id = ?1 AND (?2 = 'all' OR w.status IN ('received','quoted','approved','in_progress','qc')
+            OR (w.status = 'delivered' AND w.payment_status <> 'paid'))
+      ORDER BY w.received_at DESC LIMIT 200`).bind(a.branchId, scope).all<any>();
+    return c.json(results.map((r) => v.WorkOrderListItem.parse(r)));
+  });
+
+  app.get('/api/vehicles', async (c) => {
+    need(c, 'catalog.read');
+    const q = (c.req.query('q') ?? '').replace(/[^0-9A-Za-z]/g, '').toUpperCase().slice(0, 12);
+    const { results } = await c.env.DB.prepare(`
+      SELECT v.id, v.vin, v.make, v.model, v.model_year, p.plate_display AS plate
+      FROM vehicles v JOIN vehicle_plates p ON p.vehicle_id = v.id AND p.valid_to IS NULL
+      WHERE p.plate_norm LIKE ?1 ORDER BY p.plate_norm LIMIT 20`).bind(`%${q}%`).all<any>();
+    return c.json(results.map((r) => v.VehicleView.parse(r)));
+  });
+
+  app.post('/api/vehicles', async (c) => {
+    need(c, 'vehicle.create');
+    const a = c.get('actor'), p = await body(c, v.CreateVehicleIn), id = uuidv7(), now = Date.now();
+    const norm = p.plate.replace(/[^0-9A-Za-z]/g, '').toUpperCase();
+    await runBatch(c.env.DB, [
+      c.env.DB.prepare(`INSERT INTO vehicles(id, branch_id, vin, make, model, model_year) VALUES (?, ?, ?, ?, ?, ?)`)
+        .bind(id, a.branchId, p.vin?.toUpperCase() ?? null, p.make ?? null, p.model ?? null, p.model_year ?? null),
+      c.env.DB.prepare(`INSERT INTO vehicle_plates(id, branch_id, vehicle_id, plate_norm, plate_display, valid_from) VALUES (?, ?, ?, ?, ?, ?)`)
+        .bind(uuidv7(), a.branchId, id, norm, p.plate.toUpperCase(), now),
+      audit(c.env.DB, { branchId: a.branchId, actor: a.userId, entity: 'vehicle', entityId: id, action: 'create', changes: p, now }),
+    ]);
+    return c.json(v.VehicleView.parse({ id, plate: p.plate.toUpperCase(), vin: p.vin ?? null, make: p.make ?? null, model: p.model ?? null, model_year: p.model_year ?? null }), 201);
+  });
+
+  app.get('/api/items', async (c) => {
+    need(c, 'catalog.read');
+    const a = c.get('actor');
+    const q = (c.req.query('q') ?? '').slice(0, 40);
+    const { results } = await c.env.DB.prepare(`
+      SELECT i.id, i.code, i.name, i.item_type, i.uom, i.default_price_vnd, COALESCE(SUM(b.on_hand_qty_m), 0) AS on_hand_qty_m
+      FROM items i LEFT JOIN stock_balances b ON b.item_id = i.id AND b.branch_id = ?1
+      WHERE i.active = 1 AND (i.name LIKE ?2 OR i.code LIKE ?2)
+      GROUP BY i.id ORDER BY i.name LIMIT 50`).bind(a.branchId, `%${q}%`).all<any>();
+    return c.json(results.map((r) => v.ItemView.parse(r)));
+  });
+
+  app.get('/api/warehouses', async (c) => {
+    need(c, 'catalog.read');
+    const rows = await orm(c).select({ id: s.warehouses.id, code: s.warehouses.code, name: s.warehouses.name })
+      .from(s.warehouses).where(eq(s.warehouses.branchId, c.get('actor').branchId)).all();
+    return c.json(rows);
   });
 
   // ------------------------------------------------------------ lệnh sửa chữa
@@ -158,6 +233,33 @@ export function api() {
     return c.json(await readOrder(c, woId));
   });
 
+  // "Chờ" là khoảng thời gian có lý do (G1-01); mỗi lệnh tối đa một khoảng chờ đang mở.
+  app.post('/api/work-orders/:id/holds', async (c) => {
+    need(c, 'wo.transition');
+    const a = c.get('actor'), woId = c.req.param('id'), p = await body(c, v.HoldIn), now = Date.now(), db = c.env.DB;
+    await orderInBranch(c, woId);
+    await runBatch(db, [
+      guardNotExists(db, 'ORDER_NOT_EDITABLE', `SELECT 1 FROM work_orders WHERE id = ? AND status IN ('approved','in_progress','qc')`, woId),
+      guardExists(db, 'HOLD_ALREADY_OPEN', `SELECT 1 FROM work_order_holds WHERE work_order_id = ? AND ended_at IS NULL`, woId),
+      db.prepare(`INSERT INTO work_order_holds(id, branch_id, work_order_id, reason, started_at, note) VALUES (?, ?, ?, ?, ?, ?)`)
+        .bind(uuidv7(now), a.branchId, woId, p.reason, now, p.note ?? null),
+      audit(db, { branchId: a.branchId, actor: a.userId, entity: 'work_order', entityId: woId, action: 'hold_start', changes: p, now }),
+    ]);
+    return c.json(await readOrder(c, woId));
+  });
+
+  app.post('/api/work-orders/:id/holds/end', async (c) => {
+    need(c, 'wo.transition');
+    const a = c.get('actor'), woId = c.req.param('id'), now = Date.now(), db = c.env.DB;
+    await orderInBranch(c, woId);
+    await runBatch(db, [
+      guardNotExists(db, 'NO_OPEN_HOLD', `SELECT 1 FROM work_order_holds WHERE work_order_id = ? AND ended_at IS NULL`, woId),
+      db.prepare(`UPDATE work_order_holds SET ended_at = ? WHERE work_order_id = ? AND ended_at IS NULL`).bind(now, woId),
+      audit(db, { branchId: a.branchId, actor: a.userId, entity: 'work_order', entityId: woId, action: 'hold_end', now }),
+    ]);
+    return c.json(await readOrder(c, woId));
+  });
+
   app.post('/api/work-orders/:id/reopen', async (c) => {
     need(c, 'wo.reopen');
     const a = c.get('actor'), woId = c.req.param('id'), p = await body(c, v.ReopenIn);
@@ -215,7 +317,9 @@ async function readOrder(c: C, woId: string) {
   const lines = await db.select().from(s.workOrderLines).where(eq(s.workOrderLines.workOrderId, woId)).orderBy(asc(s.workOrderLines.lineNo)).all();
   const plate = await db.select({ p: s.vehiclePlates.plateDisplay }).from(s.vehiclePlates)
     .where(eq(s.vehiclePlates.vehicleId, w.vehicleId)).orderBy(desc(s.vehiclePlates.validFrom)).get();
-  const base = { ...snake(w), plate: plate?.p ?? null, lines: lines.map(snake) };
+  const veh = await db.select({ make: s.vehicles.make, model: s.vehicles.model, model_year: s.vehicles.modelYear }).from(s.vehicles).where(eq(s.vehicles.id, w.vehicleId)).get();
+  const hold = await c.env.DB.prepare(`SELECT id, reason, started_at, note FROM work_order_holds WHERE work_order_id = ? AND ended_at IS NULL LIMIT 1`).bind(woId).first<any>();
+  const base = { ...snake(w), plate: plate?.p ?? null, hold: hold ?? null, vehicle: veh ?? { make: null, model: null, model_year: null }, lines: lines.map(snake) };
   if (!seesCost(a)) return v.WorkOrderView.parse(base);
 
   const cost = await db.select().from(s.workOrderCosts).where(eq(s.workOrderCosts.workOrderId, woId)).get();

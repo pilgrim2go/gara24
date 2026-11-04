@@ -22,6 +22,8 @@ export const PERMS = {
   'pay.intent': ['owner', 'manager', 'advisor', 'cashier'],
   'audit.read': ['owner', 'manager', 'accountant', 'advisor', 'technician', 'investor'],
   'dashboard.read': ['owner', 'manager', 'accountant', 'investor'],
+  'vehicle.create': ['owner', 'manager', 'advisor'],
+  'catalog.read': ROLES,
 } as const satisfies Record<string, readonly Role[]>;
 export type Perm = keyof typeof PERMS;
 export const can = (a: Actor, p: Perm) => a.roles.some((r) => (PERMS[p] as readonly Role[]).includes(r));

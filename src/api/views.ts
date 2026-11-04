@@ -37,7 +37,58 @@ export const WorkOrderView = z.object({
   locked_at: ms,
   lock_reason: z.string().nullable(),
   version: z.number().int(),
+  vehicle: z.object({ make: z.string().nullable(), model: z.string().nullable(), model_year: z.number().int().nullable() }),
+  hold: z.object({ id: z.string(), reason: z.string(), started_at: z.number().int(), note: z.string().nullable() }).nullable(),
   lines: z.array(LineView),
+});
+
+export const WorkOrderListItem = z.object({
+  id: z.string(),
+  order_no: z.string().nullable(),
+  status: z.string(),
+  payment_status: z.string(),
+  plate: z.string().nullable(),
+  make: z.string().nullable(),
+  model: z.string().nullable(),
+  received_at: z.number().int(),
+  promised_at: ms,
+  grand_total_vnd: vnd,
+  paid_vnd: vnd,
+  locked_at: ms,
+  version: z.number().int(),
+  hold_reason: z.string().nullable(),
+  hold_started_at: ms,
+});
+
+export const VehicleView = z.object({
+  id: z.string(),
+  plate: z.string().nullable(),
+  vin: z.string().nullable(),
+  make: z.string().nullable(),
+  model: z.string().nullable(),
+  model_year: z.number().int().nullable(),
+});
+
+// Số lượng tồn ai cũng xem được; giá trị tồn (giá vốn) thì không có ở đây.
+export const ItemView = z.object({
+  id: z.string(),
+  code: z.string(),
+  name: z.string(),
+  item_type: z.string(),
+  uom: z.string(),
+  default_price_vnd: z.number().int().nullable(),
+  on_hand_qty_m: z.number().int(),
+});
+
+export const MeView = z.object({
+  user_id: z.string(),
+  email: z.string(),
+  full_name: z.string(),
+  branch_id: z.string(),
+  branch_name: z.string(),
+  roles: z.array(z.string()),
+  sees_cost: z.boolean(),
+  perms: z.array(z.string()),
 });
 
 export const IssueView = z.object({
@@ -113,6 +164,14 @@ export const CancelIn = z.object({
   reason_code: z.string().regex(/^[A-Z_]{3,40}$/),
   reason: z.string().min(3).max(500),
 });
+export const CreateVehicleIn = z.object({
+  plate: z.string().trim().min(5).max(20),
+  vin: z.string().trim().length(17).optional(),
+  make: z.string().trim().max(50).optional(),
+  model: z.string().trim().max(50).optional(),
+  model_year: z.number().int().min(1950).max(2100).optional(),
+});
+export const HoldIn = z.object({ reason: z.enum(['parts', 'customer_approval', 'bay', 'other']), note: z.string().max(300).optional() });
 export const ReopenIn = z.object({ reason: z.string().min(3).max(500) });
 export const BankWebhookIn = z.object({
   txn_id: z.string().min(1).max(100),
