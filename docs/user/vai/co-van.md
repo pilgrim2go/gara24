@@ -53,3 +53,5 @@ Nút **Thu tiền QR** hiện khi lệnh còn tiền phải thu. Các bước gi
 - Hai người cùng sửa một lệnh: người lưu sau được báo "Có người vừa sửa lệnh này", phần mềm tự tải lại, bạn thao tác lại.
 - Lệnh đã thu đủ tiền thì tự khóa, nút **Thêm hạng mục** biến mất. Cần sửa thì nhờ quản lý mở lại.
 - Hủy lệnh: nhờ quản lý hoặc chủ gara.
+- Bấm **Bàn giao xe** ngay lúc giao xe cho khách, đừng để hôm sau. Lúc bấm là lúc lệnh hoàn thành, quyết định doanh thu tính vào ngày nào, tháng nào. Xem [Lệnh hoàn thành và lãi gộp tháng](../workflows/hoan-thanh-va-lai-gop-thang.md).
+- Muốn biết ai đã làm gì trên lệnh (ai chuyển bước, ai mở lại, vì sao hủy): xem [lịch sử lệnh](../bat-dau.md#xem-lịch-sử-lệnh-ai-làm-gì-lúc-nào).

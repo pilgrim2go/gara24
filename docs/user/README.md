@@ -14,8 +14,8 @@ Gara24 chạy trên trình duyệt, dùng được trên điện thoại, máy t
 | [Thu ngân](vai/thu-ngan.md) | Thu tiền bằng mã QR |
 | [Quản lý](vai/quan-ly.md) | Điều phối xưởng, kiểm tra xe, hủy và mở lại lệnh, xem báo cáo |
 | [Chủ gara](vai/chu-gara.md) | Mọi việc của quản lý, theo dõi lãi từng lệnh |
-| [Kế toán](vai/ke-toan.md) | Xem báo cáo ngày, đối chiếu tiền và kho, xem nhật ký |
-| [Nhà đầu tư](vai/nha-dau-tu.md) | Chỉ xem: lệnh, lãi, báo cáo |
+| [Kế toán](vai/ke-toan.md) | Xem báo cáo ngày và lãi gộp tháng, đối chiếu tiền và kho, xem nhật ký |
+| [Nhà đầu tư](vai/nha-dau-tu.md) | Chỉ xem: lệnh, lãi, báo cáo ngày và lãi gộp tháng |
 
 ## Luồng công việc
 
@@ -26,6 +26,7 @@ Mô tả quy tắc nghiệp vụ, không phụ thuộc màn hình:
 - [Thu tiền bằng mã QR](workflows/thu-tien-qr.md)
 - [Hủy lệnh](workflows/huy-lenh.md)
 - [Mở lại lệnh đã khóa](workflows/mo-lai-lenh.md)
+- [Lệnh hoàn thành và lãi gộp tháng](workflows/hoan-thanh-va-lai-gop-thang.md)
 
 ## Tra cứu
 

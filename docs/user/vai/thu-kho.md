@@ -18,9 +18,13 @@ Lệnh xuất được phụ tùng nằm ở các cột **Khách duyệt**, **Đ
 Phần mềm chặn hai trường hợp:
 
 - Xuất quá số lượng ghi trên lệnh: báo "Số lượng xuất vượt số lượng ghi trên lệnh". Cần thêm thì nhờ cố vấn sửa báo giá.
-- Kho trên phần mềm không đủ hàng: báo "Kho không đủ hàng để xuất". Kiểm phiếu nhập còn thiếu. Chỉ phụ tùng được quản lý cho phép tồn âm mới xuất được; khi đó lãi của lệnh có nhãn "Tạm tính".
+- Kho trên phần mềm không đủ hàng: báo "Kho không đủ hàng để xuất". Kiểm phiếu nhập còn thiếu. Chỉ phụ tùng được quản lý cho phép tồn âm mới xuất được; khi đó giá vốn của lệnh là [giá vốn tạm tính](../workflows/hoan-thanh-va-lai-gop-thang.md#giá-vốn-tạm-tính) và lãi có nhãn "Tạm tính" cho tới khi nhập bù hàng. Nhập phiếu nhập càng sớm, số lãi càng đúng.
 
 Giá vốn tính tự động theo bình quân của kho. Quy tắc chi tiết: [Xuất phụ tùng cho lệnh](../workflows/xuat-phu-tung.md).
+
+## Xem lịch sử lệnh
+
+Lệnh đang ở bước nào, ai duyệt, ai bàn giao: xem [lịch sử trạng thái](../bat-dau.md#xem-lịch-sử-lệnh-ai-làm-gì-lúc-nào) trên trang lệnh. Thủ kho không xem nhật ký chi tiết.
 
 ## Chưa có trong bản này
 

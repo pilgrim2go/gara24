@@ -25,6 +25,7 @@ Bản demo có thêm nút **Giả lập ngân hàng báo tiền về** để th�
 
 - Lệnh bị sửa sau khi tạo mã: khoản chuyển khoản không tự ghép vào lệnh. Bản này chưa có màn hình ghép tay; báo quản lý hoặc kế toán.
 - Khách chuyển dư: phần dư thành tiền khách trả trước.
+- Cần biết lệnh đã bàn giao chưa, tự khóa lúc nào sau khi tiền về: xem [lịch sử trạng thái](../bat-dau.md#xem-lịch-sử-lệnh-ai-làm-gì-lúc-nào). Dòng khóa lệnh ghi người làm là "Hệ thống".
 
 Quy tắc chi tiết: [Thu tiền bằng mã QR](../workflows/thu-tien-qr.md).
 

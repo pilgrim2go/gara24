@@ -32,4 +32,4 @@ Báo chờ đúng lúc có lợi cho bạn: thời gian chờ không tính vào 
 ## Lưu ý
 
 - Thiếu phụ tùng trên lệnh: báo thủ kho xuất, hoặc báo cố vấn nếu cần thêm hạng mục mới.
-- Mỗi lần bấm đều ghi vào **Nhật ký** của lệnh, kèm giờ.
+- Mỗi lần bấm đều ghi vào lịch sử của lệnh, kèm giờ và tên bạn. Xem [lịch sử lệnh](../bat-dau.md#xem-lịch-sử-lệnh-ai-làm-gì-lúc-nào).
