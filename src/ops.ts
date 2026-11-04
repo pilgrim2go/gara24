@@ -143,19 +143,35 @@ export async function transition(db: D1, p: { branchId: string; userId: string; 
 // ---------------------------------------------------------------- nhập mua (để có tồn kho và giá vốn)
 export type InLine = { move_id: string; item_id: string; qty_m: number; unit_cost_vnd: number };
 
-export async function receiveStock(db: D1, p: { key: string; branchId: string; userId: string; docId: string; warehouseId: string; lines: InLine[]; now: number }) {
+export async function receiveStock(db: D1, p: {
+  key: string; branchId: string; userId: string; docId: string; warehouseId: string; lines: InLine[]; now: number;
+  supplierInvoiceNo?: string | null; note?: string | null;
+}) {
   const d = bizDate(p.now);
   const seqKey = `NK-${d.slice(0, 4)}`;
   const L = JSON.stringify(p.lines);
   return withIdempotency(db, p.key, async () => {
-    await runBatch(db, [
+    const docStmt = db.prepare(`
+      INSERT INTO stock_docs(id, branch_id, doc_no, doc_type, warehouse_id, supplier_invoice_no, biz_date, status, note, created_by, created_at)
+      SELECT ?1, ?2, ?3 || '-' || printf('%05d', last_value), 'purchase_receipt', ?4, ?8, ?5, 'posted', ?9, ?6, ?7
+      FROM sequences WHERE branch_id = ?2 AND seq_key = ?3 RETURNING doc_no`)
+      .bind(p.docId, p.branchId, seqKey, p.warehouseId, d, p.userId, p.now, p.supplierInvoiceNo ?? null, p.note ?? null);
+    const stmts = [
       idem(db, p.key, p.branchId, p.userId, 'stock.receive', p.docId, p.now),
       guardNotExists(db, 'EMPTY_LINES', `SELECT 1 FROM json_each(?)`, L),
       guardExists(db, 'DUPLICATE_ITEM', `SELECT 1 FROM json_each(?) GROUP BY json_extract(value, '$.item_id') HAVING COUNT(*) > 1`, L),
+      // Chỉ nhập mặt hàng của chính chi nhánh, đang dùng, có quản lý tồn (phụ tùng, vật tư).
+      guardExists(db, 'ITEM_NOT_STOCKABLE', `
+        SELECT 1 FROM json_each(?1) j LEFT JOIN items i ON i.id = json_extract(j.value, '$.item_id')
+        WHERE i.id IS NULL OR i.branch_id <> ?2 OR i.active = 0 OR i.track_stock = 0 OR i.item_type NOT IN ('part', 'consumable')`, L, p.branchId),
+      // Lần đầu nhập mặt hàng vào kho này: tạo dòng tồn, cờ cho tồn âm lấy theo mặt hàng.
+      db.prepare(`
+        INSERT INTO stock_balances(warehouse_id, item_id, branch_id, allow_negative)
+        SELECT ?1, i.id, i.branch_id, i.allow_negative FROM json_each(?2) j JOIN items i ON i.id = json_extract(j.value, '$.item_id')
+        WHERE 1
+        ON CONFLICT(warehouse_id, item_id) DO NOTHING`).bind(p.warehouseId, L),
       nextSeq(db, p.branchId, seqKey),
-      db.prepare(`INSERT INTO stock_docs(id, branch_id, doc_no, doc_type, warehouse_id, biz_date, status, created_by, created_at)
-                  SELECT ?1, ?2, ?3 || '-' || printf('%05d', last_value), 'purchase_receipt', ?4, ?5, 'posted', ?6, ?7 FROM sequences WHERE branch_id = ?2 AND seq_key = ?3`)
-        .bind(p.docId, p.branchId, seqKey, p.warehouseId, d, p.userId, p.now),
+      docStmt,
       db.prepare(`
         INSERT INTO stock_moves(id, branch_id, stock_doc_id, warehouse_id, item_id, qty_delta_m, total_cost_vnd, cost_status, costing_method, biz_date)
         SELECT json_extract(value, '$.move_id'), ?, ?, ?, json_extract(value, '$.item_id'), json_extract(value, '$.qty_m'),
@@ -175,8 +191,9 @@ export async function receiveStock(db: D1, p: { key: string; branchId: string; u
                   ON CONFLICT(branch_id, biz_date) DO UPDATE SET stock_in_value_vnd = stock_in_value_vnd + excluded.stock_in_value_vnd`)
         .bind(p.branchId, d, p.docId),
       audit(db, { branchId: p.branchId, actor: p.userId, entity: 'stock_doc', entityId: p.docId, action: 'receive', changes: p.lines, sensitive: true, now: p.now }),
-    ]);
-    return { docId: p.docId };
+    ];
+    const res = await runBatch(db, stmts);
+    return { docId: p.docId, docNo: res[stmts.indexOf(docStmt)].results[0].doc_no as string };
   });
 }
 
@@ -345,6 +362,25 @@ export async function cancelWorkOrder(db: D1, p: {
 }
 
 // ---------------------------------------------------------------- 2.4 QR: tạo mã, nhận webhook, khóa lệnh
+// Cộng tiền vào lệnh (tối đa bằng số còn phải thu), đủ thì khóa theo lock_policy và ghi sự kiện khóa. Dùng chung cho QR và tiền mặt.
+function applyPaymentToOrder(db: D1, p: { woId: string; amount: number; by: string; now: number }): Stmt[] {
+  return [
+    // SQLite tính mọi vế phải của SET trên giá trị CŨ của dòng.
+    db.prepare(`
+      UPDATE work_orders SET
+        paid_vnd = paid_vnd + MIN(?1, grand_total_vnd - paid_vnd),
+        payment_status = CASE WHEN paid_vnd + ?1 >= grand_total_vnd THEN 'paid' ELSE 'partial' END,
+        fully_paid_at = CASE WHEN fully_paid_at IS NULL AND paid_vnd + ?1 >= grand_total_vnd THEN ?2 ELSE fully_paid_at END,
+        locked_at = CASE WHEN locked_at IS NULL AND lock_policy IN ('invoice_or_paid','paid') AND paid_vnd + ?1 >= grand_total_vnd THEN ?2 ELSE locked_at END,
+        lock_reason = CASE WHEN locked_at IS NULL AND lock_policy IN ('invoice_or_paid','paid') AND paid_vnd + ?1 >= grand_total_vnd THEN 'paid' ELSE lock_reason END,
+        version = version + 1
+      WHERE id = ?3`).bind(p.amount, p.now, p.woId),
+    db.prepare(`INSERT INTO work_order_events(id, branch_id, work_order_id, kind, to_value, at, by)
+                SELECT ?, branch_id, id, 'lock', 'paid', ?, ? FROM work_orders WHERE id = ? AND locked_at = ?`)
+      .bind(uuidv7(p.now), p.now, p.by, p.woId, p.now),
+  ];
+}
+
 export async function createPaymentIntent(db: D1, p: { branchId: string; woId: string; intentId: string; transferRef: string; ttlMs: number; now: number }) {
   await runBatch(db, [
     guardNotExists(db, 'ORDER_NOT_EDITABLE',
@@ -382,25 +418,49 @@ export async function postQrPayment(db: D1, p: {
       UNION ALL
       SELECT lower(hex(randomblob(16))), ?1, ?2, 'advance', NULL, ?3 - (grand_total_vnd - paid_vnd) FROM work_orders
       WHERE id = ?4 AND ?3 > grand_total_vnd - paid_vnd`).bind(p.branchId, p.paymentId, A, p.woId),
-    // SQLite tính mọi vế phải của SET trên giá trị CŨ của dòng.
-    db.prepare(`
-      UPDATE work_orders SET
-        paid_vnd = paid_vnd + MIN(?1, grand_total_vnd - paid_vnd),
-        payment_status = CASE WHEN paid_vnd + ?1 >= grand_total_vnd THEN 'paid' ELSE 'partial' END,
-        fully_paid_at = CASE WHEN fully_paid_at IS NULL AND paid_vnd + ?1 >= grand_total_vnd THEN ?2 ELSE fully_paid_at END,
-        locked_at = CASE WHEN locked_at IS NULL AND lock_policy IN ('invoice_or_paid','paid') AND paid_vnd + ?1 >= grand_total_vnd THEN ?2 ELSE locked_at END,
-        lock_reason = CASE WHEN locked_at IS NULL AND lock_policy IN ('invoice_or_paid','paid') AND paid_vnd + ?1 >= grand_total_vnd THEN 'paid' ELSE lock_reason END,
-        version = version + 1
-      WHERE id = ?3`).bind(A, p.now, p.woId),
+    ...applyPaymentToOrder(db, { woId: p.woId, amount: A, by: 'system', now: p.now }),
     db.prepare(`UPDATE payment_intents SET status = 'matched', bank_txn_id = ? WHERE id = ?`).bind(p.bankTxnId, p.intentId),
-    db.prepare(`INSERT INTO work_order_events(id, branch_id, work_order_id, kind, to_value, at, by)
-                SELECT ?, branch_id, id, 'lock', 'paid', ?, 'system' FROM work_orders WHERE id = ? AND locked_at = ?`)
-      .bind(uuidv7(p.now), p.now, p.woId, p.now),
     db.prepare(`INSERT INTO daily_branch_stats(branch_id, biz_date, collected_vnd, qr_in_vnd) VALUES (?, ?, ?, ?)
                 ON CONFLICT(branch_id, biz_date) DO UPDATE SET collected_vnd = collected_vnd + excluded.collected_vnd, qr_in_vnd = qr_in_vnd + excluded.qr_in_vnd`)
       .bind(p.branchId, d, A, A),
     audit(db, { branchId: p.branchId, actor: 'system', entity: 'payment', entityId: p.paymentId, action: 'qr_in', changes: { amount: A, intent: p.intentId }, now: p.now }),
   ]);
+}
+
+// ---------------------------------------------------------------- 2.5 Thu tiền mặt theo lệnh (phiếu thu PT)
+// Khác QR: thu ngân cầm tiền nên phần dư là tiền thối, không thành tiền trả trước. Thu quá số còn phải thu bị chặn.
+export async function postCashPayment(db: D1, p: { key: string; branchId: string; userId: string; woId: string; paymentId: string; amount: number; note?: string | null; now: number }) {
+  const d = bizDate(p.now);
+  const seqKey = `PT-${d.slice(0, 4)}`;
+  const A = p.amount;
+  return withIdempotency(db, p.key, async () => {
+    const payStmt = db.prepare(`
+      INSERT INTO payments(id, branch_id, doc_no, direction, method, amount_vnd, biz_date, at, status, note)
+      SELECT ?1, ?2, ?3 || '-' || printf('%05d', last_value), 'in', 'cash', ?4, ?5, ?6, 'posted', ?7
+      FROM sequences WHERE branch_id = ?2 AND seq_key = ?3 RETURNING doc_no`)
+      .bind(p.paymentId, p.branchId, seqKey, A, d, p.now, p.note ?? null);
+    const stmts = [
+      idem(db, p.key, p.branchId, p.userId, 'pay.cash', p.paymentId, p.now),
+      guardNotExists(db, 'ORDER_NOT_PAYABLE',
+        `SELECT 1 FROM work_orders WHERE id = ? AND branch_id = ? AND status <> 'cancelled' AND grand_total_vnd > paid_vnd`, p.woId, p.branchId),
+      guardExists(db, 'AMOUNT_EXCEEDS_DUE', `SELECT 1 FROM work_orders WHERE id = ? AND ? > grand_total_vnd - paid_vnd`, p.woId, A),
+      nextSeq(db, p.branchId, seqKey),
+      payStmt,
+      db.prepare(`INSERT INTO payment_allocations(id, branch_id, payment_id, target, work_order_id, amount_vnd) VALUES (?, ?, ?, 'work_order', ?, ?)`)
+        .bind(uuidv7(p.now), p.branchId, p.paymentId, p.woId, A),
+      ...applyPaymentToOrder(db, { woId: p.woId, amount: A, by: p.userId, now: p.now }),
+      // Số còn phải thu đã đổi: mã QR đang chờ không còn đúng. Khách lỡ chuyển khoản thì giao dịch vào hàng chờ ghép tay.
+      db.prepare(`UPDATE payment_intents SET status = 'void' WHERE work_order_id = ? AND status = 'pending'`).bind(p.woId),
+      db.prepare(`INSERT INTO daily_branch_stats(branch_id, biz_date, collected_vnd, cash_in_vnd) VALUES (?, ?, ?, ?)
+                  ON CONFLICT(branch_id, biz_date) DO UPDATE SET collected_vnd = collected_vnd + excluded.collected_vnd, cash_in_vnd = cash_in_vnd + excluded.cash_in_vnd`)
+        .bind(p.branchId, d, A, A),
+      // Ghi vào nhật ký của lệnh để ai xem lệnh cũng thấy ai thu, bao nhiêu.
+      audit(db, { branchId: p.branchId, actor: p.userId, entity: 'work_order', entityId: p.woId, action: 'cash_in',
+        changes: { payment_id: p.paymentId, amount_vnd: A, note: p.note ?? null }, now: p.now }),
+    ];
+    const res = await runBatch(db, stmts);
+    return { paymentId: p.paymentId, docNo: res[stmts.indexOf(payStmt)].results[0].doc_no as string };
+  });
 }
 
 // Dự phòng khi guard INTENT_STALE hỏng: tiền không bao giờ mất dấu, thu ngân ghép tay.

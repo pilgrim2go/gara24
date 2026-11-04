@@ -53,6 +53,13 @@ const CHECKS: Array<{ name: string; sql: string }> = [
             AND (s.collected_vnd <> pin OR s.refund_out_vnd <> pout)`,
   },
   {
+    name: 'daily_branch_stats tiền mặt/QR = SUM(payments thu theo cách thu)',
+    sql: `SELECT s.biz_date, s.cash_in_vnd, s.qr_in_vnd,
+                 COALESCE((SELECT SUM(amount_vnd) FROM payments p WHERE p.branch_id = ?1 AND p.biz_date = s.biz_date AND direction = 'in' AND method = 'cash'), 0) AS cash,
+                 COALESCE((SELECT SUM(amount_vnd) FROM payments p WHERE p.branch_id = ?1 AND p.biz_date = s.biz_date AND direction = 'in' AND method = 'qr'), 0) AS qr
+          FROM daily_branch_stats s WHERE s.branch_id = ?1 AND (s.cash_in_vnd <> cash OR s.qr_in_vnd <> qr)`,
+  },
+  {
     // Lệnh đã giao không sửa dòng, không xuất kho, không hủy được, nên số chụp lúc hoàn thành phải bằng số hiện tại.
     // Sau này chạy lại giá vốn (cost_runs) thì phải điều chỉnh cả daily_branch_stats, nếu không bước này báo lệch.
     name: 'daily_branch_stats hoàn thành = SUM(lệnh có completed_biz_date)',

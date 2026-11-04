@@ -20,6 +20,8 @@ export const PERMS = {
   'wo.cancel': ['owner', 'manager'],
   'wo.reopen': ['owner', 'manager'],
   'pay.intent': ['owner', 'manager', 'advisor', 'cashier'],
+  'pay.cash': ['owner', 'manager', 'cashier'],
+  'stock.receive': ['owner', 'manager', 'storekeeper'],    // đều thuộc COST_ROLES: phản hồi có giá nhập
   'audit.read': ['owner', 'manager', 'accountant', 'advisor', 'technician', 'investor'],
   'dashboard.read': ['owner', 'manager', 'accountant', 'investor'],
   'vehicle.create': ['owner', 'manager', 'advisor'],

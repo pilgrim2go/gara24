@@ -127,6 +127,29 @@ export const WorkOrderCostView = WorkOrderView.extend({
   stock_moves: z.array(IssueView),
 });
 
+// Phiếu thu: không có giá vốn, mọi vai được thu tiền đều xem được.
+export const PaymentView = z.object({
+  id: z.string(),
+  doc_no: z.string(),
+  method: z.enum(['cash', 'qr', 'transfer', 'card']),
+  amount_vnd: vnd,
+  biz_date: z.string(),
+  at: z.number().int(),
+  note: z.string().nullable(),
+});
+
+// Phiếu nhập kho: có giá nhập, chỉ trả cho vai có quyền stock.receive (đều thấy giá vốn).
+export const StockReceiptView = z.object({
+  id: z.string(),
+  doc_no: z.string(),
+  biz_date: z.string(),
+  warehouse_id: z.string(),
+  supplier_invoice_no: z.string().nullable(),
+  note: z.string().nullable(),
+  total_cost_vnd: vnd,
+  lines: z.array(z.object({ item_id: z.string(), qty_m: z.number().int(), total_cost_vnd: vnd })),
+});
+
 export const AuditView = z.object({
   at: z.number().int(),
   actor_id: z.string(),
@@ -203,6 +226,20 @@ export const CreateVehicleIn = z.object({
   make: z.string().trim().max(50).optional(),
   model: z.string().trim().max(50).optional(),
   model_year: z.number().int().min(1950).max(2100).optional(),
+});
+export const CashPaymentIn = z.object({
+  amount_vnd: z.number().int().positive().max(10_000_000_000),
+  note: z.string().trim().max(300).optional(),
+});
+export const StockReceiptIn = z.object({
+  warehouse_id: id,
+  supplier_invoice_no: z.string().trim().min(1).max(50).optional(),
+  note: z.string().trim().max(300).optional(),
+  lines: z.array(z.object({
+    item_id: id,
+    qty_m: z.number().int().positive().max(1_000_000_000),
+    unit_cost_vnd: z.number().int().nonnegative().max(10_000_000_000),
+  })).min(1).max(100),
 });
 export const HoldIn = z.object({ reason: z.enum(['parts', 'customer_approval', 'bay', 'other']), note: z.string().max(300).optional() });
 export const ReopenIn = z.object({ reason: z.string().min(3).max(500) });

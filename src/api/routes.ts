@@ -280,6 +280,33 @@ export function api() {
     return c.json({ intent_id: intentId, transfer_ref: transferRef, amount_vnd: i!.amountVnd, expires_at: i!.expiresAt }, 201);
   });
 
+  // Thu tiền mặt: idempotency key bắt buộc; gửi lặp trả lại đúng phiếu cũ (200), lần đầu 201.
+  app.post('/api/work-orders/:id/payments/cash', async (c) => {
+    need(c, 'pay.cash');
+    const a = c.get('actor'), woId = c.req.param('id'), p = await body(c, v.CashPaymentIn), now = Date.now();
+    await orderInBranch(c, woId);
+    const r = await ops.postCashPayment(c.env.DB, { key: idemKey(c), branchId: a.branchId, userId: a.userId, woId, paymentId: uuidv7(now),
+      amount: p.amount_vnd, note: p.note ?? null, now });
+    const paymentId = 'replayed' in r ? r.resultRef : r.paymentId;
+    const pay = await c.env.DB.prepare(`SELECT id, doc_no, method, amount_vnd, biz_date, at, note FROM payments WHERE id = ? AND branch_id = ?`)
+      .bind(paymentId, a.branchId).first<any>();
+    if (!pay) throw new HttpError(404, 'not_found');
+    return c.json({ payment: v.PaymentView.parse(pay), order: await readOrder(c, woId) }, 'replayed' in r ? 200 : 201);
+  });
+
+  // Nhập kho mua vào. Chỉ thủ kho/quản lý/chủ; cố vấn, thợ, thu ngân bị chặn vì phiếu có giá nhập.
+  app.post('/api/stock/receipts', async (c) => {
+    need(c, 'stock.receive');
+    const a = c.get('actor'), p = await body(c, v.StockReceiptIn), now = Date.now();
+    const wh = await orm(c).select({ id: s.warehouses.id }).from(s.warehouses)
+      .where(and(eq(s.warehouses.id, p.warehouse_id), eq(s.warehouses.branchId, a.branchId))).get();
+    if (!wh) throw new HttpError(404, 'warehouse_not_found');
+    const r = await ops.receiveStock(c.env.DB, { key: idemKey(c), branchId: a.branchId, userId: a.userId, docId: uuidv7(now), warehouseId: p.warehouse_id,
+      supplierInvoiceNo: p.supplier_invoice_no ?? null, note: p.note ?? null, now,
+      lines: p.lines.map((l) => ({ ...l, move_id: uuidv7(now) })) });
+    return c.json(await readReceipt(c, 'replayed' in r ? r.resultRef : r.docId), 'replayed' in r ? 200 : 201);
+  });
+
   app.get('/api/work-orders/:id/audit', async (c) => {
     need(c, 'audit.read');
     const a = c.get('actor'), woId = c.req.param('id');
@@ -371,6 +398,15 @@ async function readOrder(c: C, woId: string) {
     },
     stock_moves: moves.results,
   });
+}
+
+async function readReceipt(c: C, docId: string) {
+  const db = c.env.DB, branchId = c.get('actor').branchId;
+  const d = await db.prepare(`SELECT id, doc_no, biz_date, warehouse_id, supplier_invoice_no, note FROM stock_docs
+                              WHERE id = ? AND branch_id = ? AND doc_type = 'purchase_receipt'`).bind(docId, branchId).first<any>();
+  if (!d) throw new HttpError(404, 'not_found');
+  const { results } = await db.prepare(`SELECT item_id, qty_delta_m AS qty_m, total_cost_vnd FROM stock_moves WHERE stock_doc_id = ? ORDER BY rowid`).bind(docId).all<any>();
+  return v.StockReceiptView.parse({ ...d, lines: results, total_cost_vnd: results.reduce((x, l) => x + l.total_cost_vnd, 0) });
 }
 
 // Tên người thao tác: lấy từ users (bảng u đã LEFT JOIN). 'system' là Worker tự ghi (webhook); mã lạ trả lại chính mã.
