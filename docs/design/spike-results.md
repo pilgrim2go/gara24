@@ -1,6 +1,6 @@
 # Kết quả thử nghiệm D1 và API (vòng 1, 2)
 
-Bản ghi lịch sử, giữ nguyên nội dung README ở commit `base-0.2`. Lệnh vận hành hiện hành nằm ở [docs/ops](../ops/README.md).
+Bản ghi lịch sử, giữ nguyên nội dung README ở commit `base-0.2`, trừ mục **API** được cập nhật đến commit `e5d1a61` (dòng và trường mới ghi *(mới)*). Lệnh vận hành hiện hành nằm ở [docs/ops](../ops/README.md). Quyết định thiết kế sau vòng 2 nằm ở các file `adr-*.md` trong thư mục này.
 
 Mục tiêu: xác nhận các kỹ thuật trong tài liệu "gara24 — Mô hình dữ liệu D1 giai đoạn 1" chạy được trên D1 trước khi viết tiếp: trigger trong migration, bảng `_guard`, `UPDATE … FROM`, `json_each`, và bốn thao tác nguyên tử (cấp số lệnh, xuất kho theo lệnh, hủy lệnh hoàn kho, thu tiền và khóa lệnh).
 
@@ -59,7 +59,21 @@ Tổng: **38/38 test đạt** (27 thao tác, 9 API, 2 JWT).
 | POST | `/api/work-orders/:id/payment-intents` | owner, manager, advisor, cashier |
 | GET | `/api/work-orders/:id/audit` | dòng có giá vốn bị lọc trong SQL với vai không thấy giá vốn |
 | GET | `/api/dashboard/daily?from&to` | owner, manager, accountant, investor |
+| GET | `/api/dashboard/monthly?from=YYYY-MM&to=YYYY-MM` *(mới)* | owner, manager, accountant, investor. `from` ≤ `to`, tối đa 24 tháng (tính cả hai đầu); sai định dạng hoặc quá 24 tháng trả 400 |
 | POST | `/webhooks/bank/:provider` | không qua Access; header `x-signature` = HMAC-SHA256 hex của body |
+
+**Trường mới trong phản hồi** (commit `e5d1a61`)
+
+| API | Trường mới | Ý nghĩa |
+| --- | --- | --- |
+| `GET /api/work-orders/:id` | `completed_at` | ms UTC lần đầu lệnh sang `delivered`; `null` nếu chưa giao |
+| | `completed_biz_date` | Ngày nghiệp vụ giờ VN của `completed_at` (`YYYY-MM-DD`); dashboard gom doanh thu theo ngày này |
+| | `events[]` | Lịch sử từ `work_order_events`, cũ trước: `at`, `kind` (`status`, `lock`, `unlock`, `reopen`), `from_value`, `to_value`, `by_id`, `by_name`, `reason`. Không có tiền hay giá vốn, nên mọi vai đều thấy |
+| `GET /api/work-orders/:id/audit` | `actor_name` | Tên người thao tác (`users.full_name`); `system` hiện "Hệ thống"; mã không có trong `users` trả lại chính mã |
+| `GET /api/dashboard/daily` | `orders_completed` | Số lệnh hoàn thành trong ngày |
+| | `discount_completed_vnd` | Giảm giá của các lệnh đó |
+| | `cogs_provisional_vnd` | Phần giá vốn còn tạm tính (`cost_status = 'provisional'`), đã nằm trong `cogs_completed_vnd` |
+| `GET /api/dashboard/monthly` | mỗi tháng một dòng: `month`, `orders_completed`, `rev_labor_completed_vnd`, `rev_parts_completed_vnd`, `discount_completed_vnd`, `net_revenue_vnd`, `cogs_completed_vnd`, `cogs_provisional_vnd`, `gross_profit_vnd`, `margin_bp`, `collected_vnd` | `net_revenue_vnd` = công + phụ tùng − giảm giá; `gross_profit_vnd` = `net_revenue_vnd` − `cogs_completed_vnd` (gồm cả phần tạm tính); `margin_bp` là tỷ suất lãi gộp theo phần vạn, `null` khi doanh thu thuần ≤ 0. Tháng không có dòng nào trong `daily_branch_stats` không được trả về; giao diện tự điền 0 |
 
 Thao tác ghi bắt buộc header `Idempotency-Key`. Lỗi nghiệp vụ trả 409 với mã (`ORDER_LOCKED`, `INSUFFICIENT_STOCK`…), đầu vào sai trả 400, thiếu quyền 403, khác chi nhánh 404.
 
