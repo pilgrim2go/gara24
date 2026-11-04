@@ -1,0 +1,26 @@
+{
+  "name": "gara24-d1-spike",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "db:reset": "rm -rf .wrangler/state && wrangler d1 migrations apply gara24 --local",
+    "test": "npm run db:reset && node --test --test-concurrency=1 test/*.test.ts",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "drizzle-kit": "^0.31.11",
+    "wrangler": "4.151.3"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.45.4",
+    "hono": "4.13.13",
+    "zod": "^4.6.7"
+  },
+  "overrides": {
+    "undici": "7.30.1",
+    "@esbuild-kit/core-utils": {
+      "esbuild": "0.25.12"
+    }
+  }
+}
