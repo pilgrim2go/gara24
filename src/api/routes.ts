@@ -287,11 +287,12 @@ export function api() {
     const db = c.env.DB;
     // Vai không thấy giá vốn: lọc dòng nhạy cảm ngay trong SQL, không lấy lên rồi mới bỏ.
     const { results } = await db.prepare(`
-      SELECT at, actor_id, action, reason, changes_json FROM audit_log
-      WHERE branch_id = ?1 AND ((entity = 'work_order' AND entity_id = ?2)
-         OR (entity = 'stock_doc' AND entity_id IN (SELECT id FROM stock_docs WHERE work_order_id = ?2)))
-        AND (sensitive = 0 OR ?3 = 1)
-      ORDER BY at`).bind(a.branchId, woId, seesCost(a) ? 1 : 0).all<any>();
+      SELECT a.at, a.actor_id, ${ACTOR_NAME('a.actor_id')} AS actor_name, a.action, a.reason, a.changes_json
+      FROM audit_log a LEFT JOIN users u ON u.id = a.actor_id
+      WHERE a.branch_id = ?1 AND ((a.entity = 'work_order' AND a.entity_id = ?2)
+         OR (a.entity = 'stock_doc' AND a.entity_id IN (SELECT id FROM stock_docs WHERE work_order_id = ?2)))
+        AND (a.sensitive = 0 OR ?3 = 1)
+      ORDER BY a.at, a.rowid`).bind(a.branchId, woId, seesCost(a) ? 1 : 0).all<any>();
     return c.json(results.map((r) => v.AuditView.parse({ ...r, changes: r.changes_json ? JSON.parse(r.changes_json) : null })));
   });
 
@@ -304,6 +305,33 @@ export function api() {
     const rows = await orm(c).select().from(d)
       .where(and(eq(d.branchId, a.branchId), gte(d.bizDate, q.data.from), lte(d.bizDate, q.data.to))).orderBy(asc(d.bizDate)).all();
     return c.json(rows.map((r) => v.DailyStatsView.parse(snake(r))));
+  });
+
+  // Lãi gộp theo tháng (ghi nhận theo ngày hoàn thành). Tối đa 24 tháng mỗi lần gọi.
+  app.get('/api/dashboard/monthly', async (c) => {
+    need(c, 'dashboard.read');
+    const a = c.get('actor');
+    const ym = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/);
+    const q = z.object({ from: ym, to: ym }).refine((x) => x.from <= x.to && monthsBetween(x.from, x.to) <= 24).safeParse(c.req.query());
+    if (!q.success) throw new HttpError(400, 'invalid_input');
+    const { results } = await c.env.DB.prepare(`
+      SELECT substr(biz_date, 1, 7) AS month,
+             SUM(orders_completed) AS orders_completed,
+             SUM(rev_labor_completed_vnd) AS rev_labor_completed_vnd,
+             SUM(rev_parts_completed_vnd) AS rev_parts_completed_vnd,
+             SUM(discount_completed_vnd) AS discount_completed_vnd,
+             SUM(cogs_completed_vnd) AS cogs_completed_vnd,
+             SUM(cogs_provisional_vnd) AS cogs_provisional_vnd,
+             SUM(collected_vnd) AS collected_vnd
+      FROM daily_branch_stats
+      WHERE branch_id = ?1 AND biz_date >= ?2 || '-01' AND biz_date <= ?3 || '-31'
+      GROUP BY substr(biz_date, 1, 7) ORDER BY month`).bind(a.branchId, q.data.from, q.data.to).all<any>();
+    return c.json(results.map((r) => {
+      const net = r.rev_labor_completed_vnd + r.rev_parts_completed_vnd - r.discount_completed_vnd;
+      const gross = net - r.cogs_completed_vnd;
+      return v.MonthlyStatsView.parse({ ...r, net_revenue_vnd: net, gross_profit_vnd: gross,
+        margin_bp: net > 0 ? Math.round((gross * 10000) / net) : null });
+    }));
   });
 
   return app;
@@ -319,7 +347,12 @@ async function readOrder(c: C, woId: string) {
     .where(eq(s.vehiclePlates.vehicleId, w.vehicleId)).orderBy(desc(s.vehiclePlates.validFrom)).get();
   const veh = await db.select({ make: s.vehicles.make, model: s.vehicles.model, model_year: s.vehicles.modelYear }).from(s.vehicles).where(eq(s.vehicles.id, w.vehicleId)).get();
   const hold = await c.env.DB.prepare(`SELECT id, reason, started_at, note FROM work_order_holds WHERE work_order_id = ? AND ended_at IS NULL LIMIT 1`).bind(woId).first<any>();
-  const base = { ...snake(w), plate: plate?.p ?? null, hold: hold ?? null, vehicle: veh ?? { make: null, model: null, model_year: null }, lines: lines.map(snake) };
+  const events = await c.env.DB.prepare(`
+    SELECT e.at, e.kind, e.from_value, e.to_value, e.by AS by_id, ${ACTOR_NAME('e.by')} AS by_name, e.reason
+    FROM work_order_events e LEFT JOIN users u ON u.id = e.by
+    WHERE e.work_order_id = ?1 AND e.branch_id = ?2 ORDER BY e.at, e.rowid`).bind(woId, a.branchId).all<any>();
+  const base = { ...snake(w), plate: plate?.p ?? null, hold: hold ?? null, vehicle: veh ?? { make: null, model: null, model_year: null },
+    lines: lines.map(snake), events: events.results };
   if (!seesCost(a)) return v.WorkOrderView.parse(base);
 
   const cost = await db.select().from(s.workOrderCosts).where(eq(s.workOrderCosts.workOrderId, woId)).get();
@@ -339,6 +372,12 @@ async function readOrder(c: C, woId: string) {
     stock_moves: moves.results,
   });
 }
+
+// Tên người thao tác: lấy từ users (bảng u đã LEFT JOIN). 'system' là Worker tự ghi (webhook); mã lạ trả lại chính mã.
+const ACTOR_NAME = (col: string) => `COALESCE(u.full_name, CASE ${col} WHEN 'system' THEN 'Hệ thống' ELSE ${col} END)`;
+
+const monthsBetween = (from: string, to: string) =>
+  (Number(to.slice(0, 4)) - Number(from.slice(0, 4))) * 12 + Number(to.slice(5, 7)) - Number(from.slice(5, 7)) + 1;
 
 const snake = (o: Record<string, unknown>) => Object.fromEntries(Object.entries(o).map(([k, val]) => [k.replace(/[A-Z]/g, (m) => '_' + m.toLowerCase()), val]));
 

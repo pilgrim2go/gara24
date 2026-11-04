@@ -52,6 +52,26 @@ const CHECKS: Array<{ name: string; sql: string }> = [
           FROM daily_branch_stats s WHERE s.branch_id = ?1
             AND (s.collected_vnd <> pin OR s.refund_out_vnd <> pout)`,
   },
+  {
+    // Lệnh đã giao không sửa dòng, không xuất kho, không hủy được, nên số chụp lúc hoàn thành phải bằng số hiện tại.
+    // Sau này chạy lại giá vốn (cost_runs) thì phải điều chỉnh cả daily_branch_stats, nếu không bước này báo lệch.
+    name: 'daily_branch_stats hoàn thành = SUM(lệnh có completed_biz_date)',
+    sql: `SELECT s.biz_date, s.orders_completed, s.rev_labor_completed_vnd, s.rev_parts_completed_vnd, s.discount_completed_vnd,
+                 s.cogs_completed_vnd, s.cogs_provisional_vnd, o.n, o.labor, o.parts, o.disc, o.cogs, o.prov
+          FROM daily_branch_stats s
+          LEFT JOIN (SELECT w.completed_biz_date d, COUNT(*) n, SUM(w.labor_gross_vnd) labor, SUM(w.parts_gross_vnd) parts,
+                            SUM(w.discount_vnd) disc, SUM(COALESCE(c.parts_cost_vnd, 0)) cogs,
+                            SUM(CASE WHEN c.cost_status = 'provisional' THEN c.parts_cost_vnd ELSE 0 END) prov
+                     FROM work_orders w LEFT JOIN work_order_costs c ON c.work_order_id = w.id
+                     WHERE w.branch_id = ?1 AND w.completed_biz_date IS NOT NULL GROUP BY w.completed_biz_date) o ON o.d = s.biz_date
+          WHERE s.branch_id = ?1 AND (s.orders_completed <> COALESCE(o.n, 0) OR s.rev_labor_completed_vnd <> COALESCE(o.labor, 0)
+            OR s.rev_parts_completed_vnd <> COALESCE(o.parts, 0) OR s.discount_completed_vnd <> COALESCE(o.disc, 0)
+            OR s.cogs_completed_vnd <> COALESCE(o.cogs, 0) OR s.cogs_provisional_vnd <> COALESCE(o.prov, 0))
+          UNION ALL
+          SELECT w.completed_biz_date, NULL, NULL, NULL, NULL, NULL, NULL, COUNT(*), NULL, NULL, NULL, NULL, NULL
+          FROM work_orders w LEFT JOIN daily_branch_stats s ON s.branch_id = w.branch_id AND s.biz_date = w.completed_biz_date
+          WHERE w.branch_id = ?1 AND w.completed_biz_date IS NOT NULL AND s.biz_date IS NULL GROUP BY w.completed_biz_date`,
+  },
 ];
 
 export async function checkInvariants(db: D1, branchId: string) {

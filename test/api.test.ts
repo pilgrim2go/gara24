@@ -122,6 +122,39 @@ describe('API theo vai', () => {
     assert.equal((await call('GET', `/api/dashboard/daily?from=2026-11-01&to=2026-11-30`, advisor)).status, 403);
   });
 
+  it('10. nhật ký trả tên người; lệnh có lịch sử trạng thái kèm tên', async () => {
+    const au = await call('GET', `/api/work-orders/${woId}/audit`, owner);
+    const create = au.json.find((e: any) => e.action === 'create');
+    assert.equal(create.actor_name, 'covan');
+    assert.ok(create.actor_id.length > 8);
+    const r = await call('GET', `/api/work-orders/${woId}`, advisor);
+    assert.deepEqual(r.json.events.map((e: any) => [e.kind, e.from_value, e.to_value, e.by_name]),
+      [['status', null, 'received', 'covan'], ['status', 'received', 'approved', 'covan'], ['lock', null, 'paid', 'Hệ thống']]);
+    assert.deepEqual(leakedKeys(r.json), []);
+  });
+
+  it('11. giao xe qua API rồi xem lãi gộp tháng; cố vấn không xem được', async () => {
+    let r = await call('GET', `/api/work-orders/${woId}`, owner);
+    for (const to of ['in_progress', 'qc', 'delivered']) {
+      r = await call('POST', `/api/work-orders/${woId}/transition`, owner, { expected_version: r.json.version, to });
+      assert.equal(r.status, 200, JSON.stringify(r.json));
+    }
+    assert.equal(typeof r.json.completed_at, 'number');
+    assert.equal(r.json.events.at(-1).to_value, 'delivered');
+    const month = r.json.completed_biz_date.slice(0, 7);
+    const m = await call('GET', `/api/dashboard/monthly?from=${month}&to=${month}`, investor);
+    assert.equal(m.status, 200, JSON.stringify(m.json));
+    assert.deepEqual(m.json, [{ month, orders_completed: 1, rev_labor_completed_vnd: 500_000, rev_parts_completed_vnd: 400_000,
+      discount_completed_vnd: 0, net_revenue_vnd: 900_000, cogs_completed_vnd: 200_000, cogs_provisional_vnd: 0,
+      gross_profit_vnd: 700_000, margin_bp: 7778, collected_vnd: 900_000 }]);
+    const d = await call('GET', `/api/dashboard/daily?from=${month}-01&to=${month}-31`, owner);
+    assert.equal(d.json.reduce((x: number, s: any) => x + s.orders_completed, 0), 1);
+    assert.equal((await call('GET', `/api/dashboard/monthly?from=${month}&to=${month}`, advisor)).status, 403);
+    assert.equal((await call('GET', `/api/dashboard/monthly?from=2026-12&to=2026-01`, owner)).status, 400);
+    assert.equal((await call('GET', `/api/dashboard/monthly?from=2024-01&to=2026-12`, owner)).status, 400);   // quá 24 tháng
+    await assertInvariants(db, b.branchId);
+  });
+
   it('5. người của chi nhánh khác không đọc, không ghi được lệnh', async () => {
     const other = await newBranch(db);
     const outsider = await seedUser(db, other.branchId, ['owner'], 'khac');

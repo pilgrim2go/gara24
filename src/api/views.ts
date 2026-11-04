@@ -20,6 +20,17 @@ export const LineView = z.object({
   status: z.enum(['active', 'cancelled']),
 });
 
+// Lịch sử trạng thái của lệnh (work_order_events): ai, lúc nào, từ đâu sang đâu. Không có tiền, không có giá vốn.
+export const WorkOrderEventView = z.object({
+  at: z.number().int(),
+  kind: z.enum(['status', 'lock', 'unlock', 'reopen']),
+  from_value: z.string().nullable(),
+  to_value: z.string().nullable(),
+  by_id: z.string(),
+  by_name: z.string(),
+  reason: z.string().nullable(),
+});
+
 export const WorkOrderView = z.object({
   id: z.string(),
   order_no: z.string().nullable(),
@@ -36,10 +47,13 @@ export const WorkOrderView = z.object({
   paid_vnd: vnd,
   locked_at: ms,
   lock_reason: z.string().nullable(),
+  completed_at: ms,
+  completed_biz_date: z.string().nullable(),
   version: z.number().int(),
   vehicle: z.object({ make: z.string().nullable(), model: z.string().nullable(), model_year: z.number().int().nullable() }),
   hold: z.object({ id: z.string(), reason: z.string(), started_at: z.number().int(), note: z.string().nullable() }).nullable(),
   lines: z.array(LineView),
+  events: z.array(WorkOrderEventView),
 });
 
 export const WorkOrderListItem = z.object({
@@ -116,6 +130,7 @@ export const WorkOrderCostView = WorkOrderView.extend({
 export const AuditView = z.object({
   at: z.number().int(),
   actor_id: z.string(),
+  actor_name: z.string(),
   action: z.string(),
   reason: z.string().nullable(),
   changes: z.unknown().nullable(),
@@ -125,6 +140,7 @@ export const DailyStatsView = z.object({
   biz_date: z.string(),
   orders_received: z.number().int(),
   orders_cancelled: z.number().int(),
+  orders_completed: z.number().int(),
   collected_vnd: vnd,
   qr_in_vnd: vnd,
   cash_in_vnd: vnd,
@@ -134,6 +150,23 @@ export const DailyStatsView = z.object({
   cogs_completed_vnd: vnd,
   rev_labor_completed_vnd: vnd,
   rev_parts_completed_vnd: vnd,
+  discount_completed_vnd: vnd,
+  cogs_provisional_vnd: vnd,
+});
+
+// Lãi gộp theo tháng, ghi nhận theo ngày hoàn thành lệnh. Chưa trừ lương thợ, gia công ngoài, chi phí vận hành.
+export const MonthlyStatsView = z.object({
+  month: z.string(),
+  orders_completed: z.number().int(),
+  rev_labor_completed_vnd: vnd,
+  rev_parts_completed_vnd: vnd,
+  discount_completed_vnd: vnd,
+  net_revenue_vnd: vnd,
+  cogs_completed_vnd: vnd,
+  cogs_provisional_vnd: vnd,
+  gross_profit_vnd: vnd,
+  margin_bp: z.number().int().nullable(),
+  collected_vnd: vnd,
 });
 
 // ---------------------------------------------------------------- đầu vào

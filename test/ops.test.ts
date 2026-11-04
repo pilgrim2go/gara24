@@ -387,3 +387,73 @@ describe('F. Khóa kỳ (G1-12)', () => {
     await assertInvariants(db, b.branchId);
   });
 });
+
+// ============================================================================
+describe('G. Ghi nhận lệnh hoàn thành vào daily_branch_stats', () => {
+  const stats = (db: any, b: B, d: string) => row(db, `SELECT * FROM daily_branch_stats WHERE branch_id = ? AND biz_date = ?`, b.branchId, d);
+  async function deliver(db: any, b: B, woId: string, at: number) {
+    for (const to of ['in_progress', 'qc', 'delivered']) {
+      await transition(db, { branchId: b.branchId, userId: b.userId, woId, expectedVersion: await version(db, woId), to, now: at });
+    }
+  }
+
+  it('G1 giao xe: doanh thu, giá vốn ghi vào ngày hoàn thành (giờ VN), không phải ngày nhận', async () => {
+    const db = await getDb();
+    const b = await newBranch(db);
+    const item = await newItem(db, b, 'MAPHANH');
+    await receive(db, b, item, 5, 120_000);
+    const { woId, partLineId } = await approvedOrder(db, b, item, 2);      // công 500.000 + 2 x 200.000
+    await issue(db, b, woId, partLineId, item, 2);                         // giá vốn 240.000
+    const at = Date.UTC(2026, 10, 30, 16, 30);                             // 23:30 30/11 giờ VN = 16:30 UTC
+    await deliver(db, b, woId, at);
+    const w = await row(db, `SELECT completed_at, completed_biz_date, delivered_at FROM work_orders WHERE id = ?`, woId);
+    assert.deepEqual([w.completed_at, w.completed_biz_date, w.delivered_at], [at, '2026-11-30', at]);
+    const s = await stats(db, b, '2026-11-30');
+    assert.deepEqual([s.orders_completed, s.rev_labor_completed_vnd, s.rev_parts_completed_vnd, s.discount_completed_vnd, s.cogs_completed_vnd, s.cogs_provisional_vnd],
+      [1, 500_000, 400_000, 0, 240_000, 0]);
+    assert.equal((await stats(db, b, '2026-11-04')).orders_completed, 0);  // ngày nhận lệnh không có doanh thu hoàn thành
+    await assertInvariants(db, b.branchId);
+  });
+
+  it('G2 giao rồi đóng lệnh: không cộng lần hai; lệnh hủy không tính', async () => {
+    const db = await getDb();
+    const b = await newBranch(db);
+    const item = await newItem(db, b, 'LOC');
+    await receive(db, b, item, 5, 50_000);
+    const { woId } = await approvedOrder(db, b, item, 1);
+    await deliver(db, b, woId, NOW);
+    await transition(db, { branchId: b.branchId, userId: b.userId, woId, expectedVersion: await version(db, woId), to: 'closed', now: NOW + 86_400_000 });
+    const c = await approvedOrder(db, b, item, 1);
+    await cancelWorkOrder(db, { key: uuidv7(), branchId: b.branchId, userId: b.userId, woId: c.woId, expectedVersion: await version(db, c.woId),
+      paidAction: null, reasonCode: 'KHACH_DOI_Y', reason: 'khách đổi ý', returnDocId: uuidv7(), refundPaymentId: uuidv7(), now: NOW });
+    const s = await stats(db, b, '2026-11-04');
+    assert.deepEqual([s.orders_completed, s.rev_labor_completed_vnd + s.rev_parts_completed_vnd], [1, 700_000]);
+    assert.equal((await stats(db, b, '2026-11-05'))?.orders_completed ?? 0, 0);
+    assert.equal(typeof (await row(db, `SELECT closed_at FROM work_orders WHERE id = ?`, woId)).closed_at, 'number');
+    await assertInvariants(db, b.branchId);
+  });
+
+  it('G3 giá vốn tạm tính (xuất khi tồn âm) vẫn tính vào giá vốn, tách riêng phần tạm tính', async () => {
+    const db = await getDb();
+    const b = await newBranch(db);
+    const item = await newItem(db, b, 'NHOT', true);
+    await receive(db, b, item, 1, 100_000);
+    const { woId, partLineId } = await approvedOrder(db, b, item, 3);
+    await issue(db, b, woId, partLineId, item, 3);                         // 1 cái có giá, 2 cái theo giá cuối: 300.000 tạm tính
+    await deliver(db, b, woId, NOW);
+    const s = await stats(db, b, '2026-11-04');
+    assert.deepEqual([s.cogs_completed_vnd, s.cogs_provisional_vnd], [300_000, 300_000]);
+    await assertInvariants(db, b.branchId);
+  });
+
+  it('G4 bất biến phát hiện số liệu hoàn thành bị sửa tay', async () => {
+    const db = await getDb();
+    const b = await newBranch(db);
+    const item = await newItem(db, b, 'GAT');
+    const { woId } = await approvedOrder(db, b, item, 1);
+    await deliver(db, b, woId, NOW);
+    await runBatch(db, [db.prepare(`UPDATE daily_branch_stats SET rev_labor_completed_vnd = rev_labor_completed_vnd + 1 WHERE branch_id = ?`).bind(b.branchId)]);
+    const { checkInvariants } = await import('../src/invariants.ts');
+    assert.ok((await checkInvariants(db, b.branchId)).some((v) => v.check.startsWith('daily_branch_stats hoàn thành')));
+  });
+});

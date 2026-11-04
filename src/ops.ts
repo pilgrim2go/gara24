@@ -113,7 +113,30 @@ export async function transition(db: D1, p: { branchId: string; userId: string; 
     db.prepare(`INSERT INTO work_order_events(id, branch_id, work_order_id, kind, from_value, to_value, at, by)
                 SELECT ?, branch_id, id, 'status', status, ?, ?, ? FROM work_orders WHERE id = ?`)
       .bind(uuidv7(p.now), p.to, p.now, p.userId, p.woId),
-    db.prepare(`UPDATE work_orders SET status = ?, version = version + 1 WHERE id = ?`).bind(p.to, p.woId),
+    // Hoàn thành = lần đầu sang 'delivered' (giao xe). Ghi doanh thu và giá vốn vào ngày hoàn thành.
+    // Phải chạy TRƯỚC câu UPDATE dưới, vì điều kiện dựa vào completed_at còn NULL.
+    db.prepare(`
+      INSERT INTO daily_branch_stats(branch_id, biz_date, orders_completed, rev_labor_completed_vnd, rev_parts_completed_vnd,
+                                     discount_completed_vnd, cogs_completed_vnd, cogs_provisional_vnd)
+      SELECT w.branch_id, ?1, 1, w.labor_gross_vnd, w.parts_gross_vnd, w.discount_vnd,
+             COALESCE(c.parts_cost_vnd, 0), CASE WHEN c.cost_status = 'provisional' THEN c.parts_cost_vnd ELSE 0 END
+      FROM work_orders w LEFT JOIN work_order_costs c ON c.work_order_id = w.id
+      WHERE w.id = ?2 AND ?3 = 'delivered' AND w.completed_at IS NULL
+      ON CONFLICT(branch_id, biz_date) DO UPDATE SET
+        orders_completed = orders_completed + 1,
+        rev_labor_completed_vnd = rev_labor_completed_vnd + excluded.rev_labor_completed_vnd,
+        rev_parts_completed_vnd = rev_parts_completed_vnd + excluded.rev_parts_completed_vnd,
+        discount_completed_vnd = discount_completed_vnd + excluded.discount_completed_vnd,
+        cogs_completed_vnd = cogs_completed_vnd + excluded.cogs_completed_vnd,
+        cogs_provisional_vnd = cogs_provisional_vnd + excluded.cogs_provisional_vnd`).bind(bizDate(p.now), p.woId, p.to),
+    db.prepare(`
+      UPDATE work_orders SET status = ?1,
+        completed_at = CASE WHEN ?1 = 'delivered' AND completed_at IS NULL THEN ?2 ELSE completed_at END,
+        completed_biz_date = CASE WHEN ?1 = 'delivered' AND completed_at IS NULL THEN ?3 ELSE completed_biz_date END,
+        delivered_at = CASE WHEN ?1 = 'delivered' AND delivered_at IS NULL THEN ?2 ELSE delivered_at END,
+        closed_at = CASE WHEN ?1 = 'closed' AND closed_at IS NULL THEN ?2 ELSE closed_at END,
+        version = version + 1
+      WHERE id = ?4`).bind(p.to, p.now, bizDate(p.now), p.woId),
   ]);
 }
 
