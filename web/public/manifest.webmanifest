@@ -1,0 +1,10 @@
+{
+  "name": "Gara24 — quản lý xưởng",
+  "short_name": "Gara24",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#EDEFF2",
+  "theme_color": "#1D5BB0",
+  "lang": "vi",
+  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}
