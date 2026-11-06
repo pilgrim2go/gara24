@@ -18,11 +18,12 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+// idemKey: thao tác ghi tiền/kho truyền khóa cố định để gửi lại không ghi trùng; bỏ trống thì mỗi lần một khóa mới.
+async function request<T>(method: string, path: string, body?: unknown, idemKey?: string): Promise<T> {
   const headers: Record<string, string> = { 'content-type': 'application/json' };
   const u = devUser.get();
   if (u) headers['x-dev-user-email'] = u;
-  if (method !== 'GET') headers['idempotency-key'] = crypto.randomUUID();
+  if (method !== 'GET') headers['idempotency-key'] = idemKey ?? crypto.randomUUID();
   const res = await fetch(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
   const text = await res.text();
   const json = text ? JSON.parse(text) : null;
@@ -31,8 +32,11 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 }
 export const api = {
   get: <T>(p: string) => request<T>('GET', p),
-  post: <T>(p: string, b?: unknown) => request<T>('POST', p, b),
+  post: <T>(p: string, b?: unknown, idemKey?: string) => request<T>('POST', p, b, idemKey),
 };
+// Không biết máy chủ đã ghi hay chưa: mất mạng, hoặc lỗi 5xx (có thể đã ghi xong rồi mới lỗi khi đọc lại).
+// 4xx/409 là bị từ chối hẳn: cả batch không chạy, khóa chưa được lưu.
+export const outcomeUnknown = (e: unknown) => !(e instanceof ApiError) || e.status >= 500;
 
 // ---------------------------------------------------------------- kiểu dữ liệu (khớp src/api/views.ts)
 export type Me = { user_id: string; email: string; full_name: string; branch_id: string; branch_name: string; roles: string[]; sees_cost: boolean; perms: string[] };
@@ -62,6 +66,14 @@ export type DailyStats = {
 export type MonthlyStats = {
   month: string; orders_completed: number; rev_labor_completed_vnd: number; rev_parts_completed_vnd: number; discount_completed_vnd: number;
   net_revenue_vnd: number; cogs_completed_vnd: number; cogs_provisional_vnd: number; gross_profit_vnd: number; margin_bp: number | null; collected_vnd: number;
+};
+export type Warehouse = { id: string; code: string; name: string | null };
+// Phiếu thu (PaymentView): không có giá vốn
+export type Payment = { id: string; doc_no: string; method: 'cash' | 'qr' | 'transfer' | 'card'; amount_vnd: number; biz_date: string; at: number; note: string | null };
+// Phiếu nhập kho (StockReceiptView): có giá nhập, chỉ vai có stock.receive nhận được
+export type StockReceipt = {
+  id: string; doc_no: string; biz_date: string; warehouse_id: string; supplier_invoice_no: string | null; note: string | null;
+  total_cost_vnd: number; lines: Array<{ item_id: string; qty_m: number; total_cost_vnd: number }>;
 };
 export type Intent = { intent_id: string; transfer_ref: string; amount_vnd: number; expires_at: number };
 
@@ -100,6 +112,13 @@ const ERRORS: Record<string, string> = {
   HOLD_ALREADY_OPEN: 'Lệnh đang ở trạng thái chờ rồi.',
   NO_OPEN_HOLD: 'Lệnh không ở trạng thái chờ.',
   INVALID_TRANSITION: 'Không chuyển sang bước đó được từ trạng thái hiện tại.',
+  AMOUNT_EXCEEDS_DUE: 'Số thu lớn hơn số còn phải thu. Có thể vừa có khoản thu khác; tải lại lệnh rồi thử lại.',
+  ORDER_NOT_PAYABLE: 'Lệnh đã thu đủ hoặc đã hủy, không thu thêm được.',
+  ITEM_NOT_STOCKABLE: 'Có mặt hàng không nhập kho được (dịch vụ, ngừng dùng, không quản lý tồn hoặc thuộc chi nhánh khác).',
+  DUPLICATE_ITEM: 'Một mặt hàng xuất hiện ở hai dòng. Gộp lại thành một dòng.',
+  EMPTY_LINES: 'Phiếu nhập chưa có dòng nào.',
+  warehouse_not_found: 'Không tìm thấy kho này trong chi nhánh.',
+  idempotency_key_required: 'Thiếu mã chống gửi trùng. Tải lại trang rồi thử lại.',
   forbidden: 'Vai của bạn không được làm việc này.',
   unauthenticated: 'Chưa đăng nhập.',
   unknown_user: 'Tài khoản chưa được cấp quyền trong gara.',

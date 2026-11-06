@@ -1,16 +1,16 @@
 import { useEffect, useState } from 'react';
 import {
   api, ApiError, devUser, vnd, qty, timeVN, dateTimeVN, pct, since, errorText, STATUS_LABEL, PAY_LABEL, HOLD_LABEL, NEXT,
-  type Me, type Order, type OrderEvent, type Item, type Intent, type AuditEntry, type Line,
+  type Me, type Order, type OrderEvent, type Item, type Intent, type AuditEntry, type Line, type Payment,
 } from '../api';
-import { Plate, useAsync, ErrorNote, Dialog, useAction } from '../ui/kit';
+import { Plate, useAsync, ErrorNote, Dialog, useAction, useSubmitOnce, MoneyInput } from '../ui/kit';
 
 const STEPS = ['received', 'quoted', 'approved', 'in_progress', 'qc', 'delivered'];
 const EDITABLE = ['received', 'quoted', 'approved', 'in_progress', 'qc'];
 const WORKING = ['approved', 'in_progress', 'qc'];
 const ACTION_LABEL: Record<string, string> = {
   create: 'Tạo lệnh', add_lines: 'Thêm hạng mục', issue: 'Xuất kho', cancel: 'Hủy lệnh', reopen: 'Mở lại lệnh',
-  hold_start: 'Báo chờ', hold_end: 'Hết chờ',
+  hold_start: 'Báo chờ', hold_end: 'Hết chờ', cash_in: 'Thu tiền mặt',
 };
 const LOCK_LABEL: Record<string, string> = { paid: 'đã thu đủ tiền', invoice: 'đã có hóa đơn điện tử' };
 
@@ -35,7 +35,7 @@ function reasonText(r: string | null): string | null {
   return label ? `${label}. ${m![2]}` : r;
 }
 
-type Dlg = null | 'line' | 'issue' | 'qr' | 'hold' | 'cancel' | 'reopen';
+type Dlg = null | 'line' | 'issue' | 'qr' | 'cash' | 'hold' | 'cancel' | 'reopen';
 
 export function OrderScreen({ id, me }: { id: string; me: Me }) {
   const order = useAsync(() => api.get<Order>(`/api/work-orders/${id}`), [id]);
@@ -111,6 +111,7 @@ export function OrderScreen({ id, me }: { id: string; me: Me }) {
           {can('wo.transition') && !o.hold && WORKING.includes(o.status) && <button className="btn btn-big" onClick={() => setDlg('hold')}>Báo chờ</button>}
           {can('wo.lines') && !locked && EDITABLE.includes(o.status) && <button className="btn btn-big" onClick={() => setDlg('line')}>Thêm hạng mục</button>}
           {can('wo.issue') && !locked && WORKING.includes(o.status) && toIssue.length > 0 && <button className="btn btn-big" onClick={() => setDlg('issue')}>Xuất phụ tùng</button>}
+          {can('pay.cash') && remaining > 0 && <button className="btn btn-big btn-money" onClick={() => setDlg('cash')}>Thu tiền mặt</button>}
           {can('pay.intent') && remaining > 0 && <button className="btn btn-big btn-money" onClick={() => setDlg('qr')}>Thu tiền QR</button>}
           {can('wo.reopen') && locked && <button className="btn btn-quiet" onClick={() => setDlg('reopen')}>Mở lại lệnh</button>}
           {can('wo.cancel') && !locked && EDITABLE.includes(o.status) && <button className="btn btn-quiet btn-danger" onClick={() => setDlg('cancel')}>Hủy lệnh</button>}
@@ -201,6 +202,7 @@ export function OrderScreen({ id, me }: { id: string; me: Me }) {
       {dlg === 'line' && <AddLineDialog order={o} onClose={() => setDlg(null)} onDone={done} />}
       {dlg === 'issue' && <IssueDialog order={o} lines={toIssue} onClose={() => setDlg(null)} onDone={done} />}
       {dlg === 'qr' && <QrDialog order={o} onClose={done} />}
+      {dlg === 'cash' && <CashDialog order={o} onClose={done} />}
       {dlg === 'hold' && <HoldDialog id={o.id} onClose={() => setDlg(null)} onDone={done} />}
       {dlg === 'cancel' && <CancelDialog order={o} onClose={() => setDlg(null)} onDone={done} />}
       {dlg === 'reopen' && <ReopenDialog id={o.id} onClose={() => setDlg(null)} onDone={done} />}
@@ -326,6 +328,90 @@ function QrDialog({ order, onClose }: { order: Order; onClose: () => void }) {
           {sim.error ? <p className="note note-error">{errorText(sim.error)}</p> : null}
         </div>
       )}
+    </Dialog>
+  );
+}
+
+// ---------------------------------------------------------------- thu tiền mặt
+// Mệnh giá VN để gợi ý "khách đưa": làm tròn lên 50k / 100k / 500k, bỏ trùng, chỉ lấy số lớn hơn số thu.
+function cashSuggestions(amount: number): number[] {
+  if (amount <= 0) return [];
+  const up = (step: number) => Math.ceil(amount / step) * step;
+  return [amount, ...[up(50_000), up(100_000), up(500_000)].filter((x) => x > amount)]
+    .filter((x, i, a) => a.indexOf(x) === i).slice(0, 4);
+}
+
+function CashDialog({ order, onClose }: { order: Order; onClose: () => void }) {
+  const due = order.grand_total_vnd - order.paid_vnd;
+  const [amount, setAmount] = useState<number | null>(due);
+  const [given, setGiven] = useState<number | null>(null);
+  const [note, setNote] = useState('');
+  const [receipt, setReceipt] = useState<{ payment: Payment; change: number } | null>(null);
+  const save = useSubmitOnce((key: string, body: { amount_vnd: number; note?: string }) =>
+    api.post<{ payment: Payment; order: Order }>(`/api/work-orders/${order.id}/payments/cash`, body, key));
+
+  const change = amount !== null && given !== null ? given - amount : null;
+  const amountErr = amount === null ? 'Nhập số thu.' : amount <= 0 ? 'Số thu phải lớn hơn 0.' : amount > due ? `Không thu quá số còn phải thu (${vnd(due)}).` : null;
+  const givenErr = given === null ? null : change !== null && change < 0 ? `Khách đưa thiếu ${vnd(-change)}.` : null;
+  const ready = !amountErr && given !== null && !givenErr;
+  const locked = save.uncertain || save.busy;   // chưa rõ kết quả: không cho đổi số, chỉ thử lại cùng khóa
+
+  const submit = async () => {
+    if (!ready || amount === null || change === null) return;
+    // Tiền thối không lưu ở máy chủ; ghi vào ghi chú phiếu để đối chiếu két cuối ca.
+    const auto = `Khách đưa ${vnd(given!)}, thối ${vnd(change)}`;
+    const text = [auto, note.trim()].filter(Boolean).join('. ').slice(0, 300);
+    const r = await save.run({ amount_vnd: amount, note: text });
+    if (r) setReceipt({ payment: r.payment, change });
+  };
+
+  if (receipt) {
+    return (
+      <Dialog title="Đã thu tiền mặt" onClose={onClose} footer={<button className="btn btn-primary" onClick={onClose} autoFocus>Xong</button>}>
+        <div className="paid-ok" role="status">
+          Đã thu {vnd(receipt.payment.amount_vnd)}
+          <span className="cash-doc">Phiếu thu <strong>{receipt.payment.doc_no}</strong></span>
+        </div>
+        <dl className="sums cash-sums">
+          <div className="cash-change"><dt>Tiền thối cho khách</dt><dd>{vnd(receipt.change)}</dd></div>
+          {receipt.payment.amount_vnd < due && <div><dt>Lệnh còn phải thu</dt><dd>{vnd(due - receipt.payment.amount_vnd)}</dd></div>}
+        </dl>
+        <p className="fine">Ghi số phiếu lên biên nhận đưa khách. {receipt.payment.amount_vnd >= due ? 'Lệnh đã thu đủ và được khóa.' : ''}</p>
+      </Dialog>
+    );
+  }
+
+  return (
+    <Dialog title="Thu tiền mặt" onClose={onClose} footer={<>
+      {save.uncertain ? (
+        <div className="note note-warn" role="alert">
+          <span>Mất kết nối hoặc máy chủ lỗi nên chưa rõ phiếu đã ghi hay chưa. Bấm <strong>Thử lại</strong>: nếu lần trước đã ghi, hệ thống trả lại đúng phiếu cũ, không thu hai lần. Nếu đóng hộp này, xem lại dòng "Đã thu" trước khi thu lại.</span>
+        </div>
+      ) : <ErrorNote error={save.error} />}
+      <button className="btn btn-primary btn-big" disabled={!ready || save.busy} onClick={submit}>
+        {save.busy ? 'Đang ghi phiếu…' : save.uncertain ? 'Thử lại' : amount ? `Thu ${vnd(amount)}` : 'Thu tiền'}
+      </button>
+    </>}>
+      <dl className="sums">
+        <div className="sum-due"><dt>Còn phải thu</dt><dd>{vnd(due)}</dd></div>
+      </dl>
+      <MoneyInput label="Số thu lần này (đ)" value={amount} onChange={setAmount} disabled={locked}
+        hint={amountErr ?? (amount !== null && amount < due ? `Thu một phần, còn lại ${vnd(due - amount)}.` : undefined)} />
+      <MoneyInput label="Khách đưa (đ)" value={given} onChange={setGiven} disabled={locked} autoFocus />
+      <div className="cash-quick" role="group" aria-label="Chọn nhanh số khách đưa">
+        {cashSuggestions(amount ?? 0).map((x) => (
+          <button key={x} type="button" className={`btn${given === x ? ' is-on' : ''}`} disabled={locked} onClick={() => setGiven(x)}>
+            {x === amount ? 'Đưa đúng số' : vnd(x)}
+          </button>
+        ))}
+      </div>
+      <div className={`cash-change-live${givenErr ? ' is-short' : ''}`} aria-live="polite">
+        <span>Tiền thối</span>
+        <strong>{givenErr ?? (change !== null ? vnd(change) : '—')}</strong>
+      </div>
+      <label className="field"><span>Ghi chú (không bắt buộc)</span>
+        <input value={note} maxLength={200} disabled={locked} onChange={(e) => setNote(e.target.value)} placeholder="Ví dụ: khách trả trước phần phụ tùng" />
+      </label>
     </Dialog>
   );
 }

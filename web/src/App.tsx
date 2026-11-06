@@ -7,8 +7,9 @@ import { OrderScreen } from './screens/Order';
 import { NewOrder } from './screens/NewOrder';
 import { Reports } from './screens/Reports';
 import { Monthly } from './screens/Monthly';
+import { Receive } from './screens/Receive';
 
-// Định tuyến bằng hash: #/board, #/orders/<id>, #/new, #/reports, #/monthly
+// Định tuyến bằng hash: #/board, #/orders/<id>, #/new, #/receive, #/reports, #/monthly
 function useRoute() {
   const [hash, setHash] = useState(location.hash || '#/board');
   useEffect(() => {
@@ -41,6 +42,7 @@ export function App() {
   const nav = [
     { key: 'board', label: 'Điều phối', show: true },
     { key: 'new', label: 'Lệnh mới', show: can('wo.create') },
+    { key: 'receive', label: 'Nhập kho', show: can('stock.receive') },
     { key: 'reports', label: 'Báo cáo', show: can('dashboard.read') },
     { key: 'monthly', label: 'Lãi gộp tháng', show: can('dashboard.read') },
   ].filter((n) => n.show);
@@ -64,6 +66,7 @@ export function App() {
       <main className="main">
         {screen === 'orders' && id ? <OrderScreen id={id} me={u} />
           : screen === 'new' && can('wo.create') ? <NewOrder />
+          : screen === 'receive' && can('stock.receive') ? <Receive />
           : screen === 'reports' && can('dashboard.read') ? <Reports />
           : screen === 'monthly' && can('dashboard.read') ? <Monthly />
           : <Board me={u} />}

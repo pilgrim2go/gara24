@@ -271,3 +271,33 @@ table.lines { width: 100%; border-collapse: collapse; font-variant-numeric: tabu
   .range .field { flex: 1 1 0; min-width: 0; }
   .range input { min-width: 0; }
 }
+
+/* ---------------- thu tiền mặt */
+.cash-doc { display: block; margin-top: 0.5rem; font-size: 1rem; font-weight: 500; color: var(--ink); }
+.cash-doc strong { font: 600 1.6rem/1.2 var(--narrow); letter-spacing: 0.04em; color: var(--green); user-select: all; }
+.cash-sums { margin-top: 1rem; }
+.cash-change dd { font: 600 1.6rem/1 var(--narrow); font-variant-numeric: tabular-nums; }
+.field-money input { font: 600 1.4rem var(--narrow); font-variant-numeric: tabular-nums; text-align: right; }
+.cash-quick { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: -0.4rem 0 0.9rem; }
+.cash-quick .btn { min-height: 44px; font-variant-numeric: tabular-nums; }
+.cash-quick .btn.is-on { background: var(--blue-soft); border-color: var(--blue); color: var(--blue); }
+.cash-change-live { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; padding: 0.7rem 0.9rem; margin: 0 0 0.9rem; border-radius: var(--r-md); background: var(--green-soft); color: var(--green); }
+.cash-change-live strong { font: 600 2rem/1 var(--narrow); font-variant-numeric: tabular-nums; }
+.cash-change-live.is-short { background: var(--red-soft); color: var(--red); }
+.cash-change-live.is-short strong { font-size: 1.2rem; }
+
+/* ---------------- nhập kho */
+.receive { max-width: 960px; }
+.receive h2 { margin: 0.5rem 0 0.6rem; }
+.receive .table-wrap { margin-bottom: 1rem; }
+.receive-lines td { vertical-align: middle; }
+.receive-lines tfoot td { border-top: 1px solid var(--line); border-bottom: 0; font-weight: 500; }
+.cell-in { width: 7.5rem; min-height: 40px; padding: 0.35rem 0.5rem; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--panel); color: var(--ink); font: 500 1rem var(--font); font-variant-numeric: tabular-nums; text-align: right; }
+.cell-in.is-bad { border-color: var(--red); }
+.cell-money { display: inline-block; }
+.uom { display: block; font-size: 0.75rem; color: var(--muted); }
+.receive-add { max-width: 36rem; }
+.receive-after { margin-top: 1rem; }
+@media (max-width: 640px) {
+  .cell-in { width: 5.5rem; }
+}
