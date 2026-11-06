@@ -37,6 +37,7 @@ const CONSTRAINT_CODES: Array<[RegExp, string]> = [
   [/UNIQUE constraint failed: idempotency_keys\.key/, 'DUPLICATE_REQUEST'],
   [/UNIQUE constraint failed: bank_transactions\.provider, bank_transactions\.provider_txn_id/, 'DUPLICATE_BANK_TXN'],
   [/UNIQUE constraint failed: work_orders\.id/, 'DUPLICATE_REQUEST'],
+  [/UNIQUE constraint failed: cash_sessions\.branch_id, cash_sessions\.holder_id/, 'SESSION_ALREADY_OPEN'],
   [/stock_not_negative/, 'INSUFFICIENT_STOCK'],
   [/issued_within_line/, 'ISSUE_EXCEEDS_LINE'],
   [/move_cost_non_negative/, 'NEGATIVE_MOVE_COST'],

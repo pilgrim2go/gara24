@@ -136,7 +136,42 @@ export const PaymentView = z.object({
   biz_date: z.string(),
   at: z.number().int(),
   note: z.string().nullable(),
+  cash_session_id: z.string().nullable().optional(),
 });
+
+// Ca thu ngân. Không có giá vốn. expected_vnd của ca đang mở là số dư sổ sách hiện tại.
+const denomCounts = z.record(z.string(), z.number().int());
+export const CashSessionView = z.object({
+  id: z.string(),
+  holder_id: z.string(),
+  holder_name: z.string(),
+  status: z.enum(['open', 'closed']),
+  biz_date: z.string().nullable(),
+  opened_at: z.number().int(),
+  opening_float_vnd: vnd,
+  opening_denominations: denomCounts.nullable(),
+  cash_in_vnd: vnd,
+  cash_out_vnd: vnd,
+  payment_count: z.number().int(),
+  expected_vnd: vnd,
+  counted_vnd: vnd.nullable(),
+  variance_vnd: vnd.nullable(),
+  denominations: denomCounts.nullable(),
+  variance_reason: z.string().nullable(),
+  closed_at: ms,
+  closed_by: z.string().nullable(),
+  closed_by_name: z.string().nullable(),
+});
+export const CashSessionPaymentView = z.object({
+  id: z.string(),
+  doc_no: z.string(),
+  direction: z.enum(['in', 'out']),
+  amount_vnd: vnd,
+  at: z.number().int(),
+  note: z.string().nullable(),
+  order_no: z.string().nullable(),
+});
+export const CashSessionDetailView = CashSessionView.extend({ payments: z.array(CashSessionPaymentView) });
 
 // Phiếu nhập kho: có giá nhập, chỉ trả cho vai có quyền stock.receive (đều thấy giá vốn).
 export const StockReceiptView = z.object({
@@ -231,6 +266,12 @@ export const CashPaymentIn = z.object({
   amount_vnd: z.number().int().positive().max(10_000_000_000),
   note: z.string().trim().max(300).optional(),
 });
+// Đếm theo mệnh giá VND: {"500000": 3, "10000": 12}. Mệnh giá lạ hoặc số tờ âm bị từ chối; tổng tối đa 10 tỷ.
+const DENOMS = ['500000', '200000', '100000', '50000', '20000', '10000', '5000', '2000', '1000', '500', '200', '100'] as const;
+export const DenominationsIn = z.partialRecord(z.enum(DENOMS), z.number().int().min(0).max(100_000))
+  .refine((d) => Object.entries(d).reduce((t, [k, n]) => t + Number(k) * (n ?? 0), 0) <= 10_000_000_000);
+export const OpenCashSessionIn = z.object({ denominations: DenominationsIn, note: z.string().trim().max(300).optional() });
+export const CloseCashSessionIn = z.object({ denominations: DenominationsIn, variance_reason: z.string().trim().min(3).max(500).optional() });
 export const StockReceiptIn = z.object({
   warehouse_id: id,
   supplier_invoice_no: z.string().trim().min(1).max(50).optional(),

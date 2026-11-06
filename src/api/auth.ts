@@ -21,6 +21,9 @@ export const PERMS = {
   'wo.reopen': ['owner', 'manager'],
   'pay.intent': ['owner', 'manager', 'advisor', 'cashier'],
   'pay.cash': ['owner', 'manager', 'cashier'],
+  'cash.session': ['owner', 'manager', 'cashier'],          // mở/chốt ca của chính mình, xem ca của mình
+  'cash.session.all': ['owner', 'manager', 'accountant'],   // xem mọi ca của chi nhánh
+  'cash.session.manage': ['owner', 'manager'],              // chốt hộ ca của người khác (thu ngân nghỉ đột xuất)
   'stock.receive': ['owner', 'manager', 'storekeeper'],    // đều thuộc COST_ROLES: phản hồi có giá nhập
   'audit.read': ['owner', 'manager', 'accountant', 'advisor', 'technician', 'investor'],
   'dashboard.read': ['owner', 'manager', 'accountant', 'investor'],

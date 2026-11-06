@@ -25,6 +25,8 @@ export async function newBranch(db: D1, opts: { lockPolicy?: string | null } = {
   const { warehouseId } = await seedBranch(db, { branchId, code, now: NOW, lockPolicy: opts.lockPolicy });
   const vehicleId = uuidv7();
   await seedVehicle(db, { branchId, vehicleId, plate: `51H-${code}` });
+  // Người thao tác dùng chung cho test tầng ops; cần có thật vì cash_sessions.holder_id tham chiếu users.
+  await db.prepare(`INSERT OR IGNORE INTO users(id, branch_id, full_name, email) VALUES ('u-test', ?, 'Người test', 'u-test@gara24.test')`).bind(branchId).run();
   return { branchId, code, warehouseId, vehicleId, userId: 'u-test' };
 }
 

@@ -79,6 +79,38 @@ const CHECKS: Array<{ name: string; sql: string }> = [
           FROM work_orders w LEFT JOIN daily_branch_stats s ON s.branch_id = w.branch_id AND s.biz_date = w.completed_biz_date
           WHERE w.branch_id = ?1 AND w.completed_biz_date IS NOT NULL AND s.biz_date IS NULL GROUP BY w.completed_biz_date`,
   },
+  {
+    // Bất biến số dư ca: ca đã chốt thì dự kiến = quỹ đầu ca + thu - chi tiền mặt gắn ca, chênh lệch = đếm - dự kiến;
+    // ca nào cũng có số dư sổ sách không âm (không chi quá tiền trong két).
+    name: 'cash_sessions số dư = quỹ đầu ca + SUM(phiếu tiền mặt gắn ca)',
+    sql: `SELECT s.id, s.status, s.opening_float_vnd, s.expected_vnd, s.counted_vnd, s.variance_vnd, COALESCE(p.net, 0) AS net
+          FROM cash_sessions s
+          LEFT JOIN (SELECT cash_session_id, SUM(CASE direction WHEN 'in' THEN amount_vnd ELSE -amount_vnd END) net
+                     FROM payments WHERE branch_id = ?1 AND cash_session_id IS NOT NULL AND status = 'posted' GROUP BY cash_session_id) p
+            ON p.cash_session_id = s.id
+          WHERE s.branch_id = ?1 AND (
+            s.opening_float_vnd + COALESCE(p.net, 0) < 0
+            OR (s.status = 'closed' AND (s.expected_vnd IS NOT s.opening_float_vnd + COALESCE(p.net, 0)
+                                         OR s.variance_vnd IS NOT s.counted_vnd - s.expected_vnd))
+            OR (s.status = 'open' AND (s.closed_at IS NOT NULL OR s.counted_vnd IS NOT NULL)))`,
+  },
+  {
+    name: 'cash_sessions tiền đầu ca và tiền đếm = SUM(mệnh giá x số tờ)',
+    sql: `SELECT s.id, s.opening_float_vnd, s.counted_vnd,
+                 (SELECT SUM(CAST(j.key AS INTEGER) * j.value) FROM json_each(s.opening_denominations_json) j) AS open_sum,
+                 (SELECT SUM(CAST(j.key AS INTEGER) * j.value) FROM json_each(s.denominations_json) j) AS count_sum
+          FROM cash_sessions s WHERE s.branch_id = ?1 AND (
+            (s.opening_denominations_json IS NOT NULL AND s.opening_float_vnd IS NOT
+               COALESCE((SELECT SUM(CAST(j.key AS INTEGER) * j.value) FROM json_each(s.opening_denominations_json) j), 0))
+            OR (s.status = 'closed' AND s.counted_vnd IS NOT
+               COALESCE((SELECT SUM(CAST(j.key AS INTEGER) * j.value) FROM json_each(s.denominations_json) j), 0)))`,
+  },
+  {
+    name: 'phiếu gắn ca: tiền mặt, cùng chi nhánh, trong thời gian ca mở',
+    sql: `SELECT p.id, p.method, p.at, s.opened_at, s.closed_at FROM payments p JOIN cash_sessions s ON s.id = p.cash_session_id
+          WHERE p.branch_id = ?1 AND (p.method <> 'cash' OR s.branch_id <> p.branch_id OR p.at < s.opened_at
+            OR (s.closed_at IS NOT NULL AND p.at > s.closed_at))`,
+  },
 ];
 
 export async function checkInvariants(db: D1, branchId: string) {

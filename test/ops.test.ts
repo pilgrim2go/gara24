@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { uuidv7, runBatch } from '../src/lib.ts';
 import {
   createWorkOrder, addLines, transition, receiveStock, issueStock, cancelWorkOrder,
-  createPaymentIntent, postQrPayment, recordUnmatchedBankTxn, reopenWorkOrder,
+  createPaymentIntent, postQrPayment, recordUnmatchedBankTxn, reopenWorkOrder, openCashSession, closeCashSession,
 } from '../src/ops.ts';
 import { getDb, closeDb, NOW, newBranch, newItem, newOrder, version, row, expectBizError, assertInvariants } from './helpers.ts';
 
@@ -246,9 +246,17 @@ describe('D. 2.3 Hủy lệnh, hoàn kho', () => {
     const { woId } = await approvedOrder(db, b, item, 1);
     await payQr(db, b, woId, 200_000);                                  // cọc 200.000
     await expectBizError(cancel(db, b, woId, null), 'PAID_NEEDS_ACTION');
+    // Hoàn tiền mặt lấy từ két: phải có ca đang mở và đủ tiền.
+    await expectBizError(cancel(db, b, woId, 'refund'), 'NO_OPEN_SESSION');
+    const sessionId = uuidv7();
+    await openCashSession(db, { key: uuidv7(), branchId: b.branchId, userId: b.userId, sessionId, denominations: { '100000': 1 }, now: NOW });
+    await expectBizError(cancel(db, b, woId, 'refund'), 'SESSION_CASH_SHORT');
+    const s2 = uuidv7();
+    await closeCashSession(db, { key: uuidv7(), branchId: b.branchId, userId: b.userId, sessionId, denominations: { '100000': 1 }, now: NOW + 60_000 });
+    await openCashSession(db, { key: uuidv7(), branchId: b.branchId, userId: b.userId, sessionId: s2, denominations: { '200000': 1 }, now: NOW + 120_000 });
     await cancel(db, b, woId, 'refund');
-    const p = await row(db, `SELECT direction, amount_vnd a, doc_no FROM payments WHERE branch_id = ? AND direction = 'out'`, b.branchId);
-    assert.deepEqual([p.direction, p.a, p.doc_no], ['out', 200_000, 'PC-2026-00001']);
+    const p = await row(db, `SELECT direction, amount_vnd a, doc_no, cash_session_id s FROM payments WHERE branch_id = ? AND direction = 'out'`, b.branchId);
+    assert.deepEqual([p.direction, p.a, p.doc_no, p.s], ['out', 200_000, 'PC-2026-00001', s2]);
     await assertInvariants(db, b.branchId);
   });
 

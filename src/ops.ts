@@ -9,6 +9,38 @@ function nextSeqIf(db: D1, branchId: string, seqKey: string, condSql: string, ..
 
 const EDITABLE = `('received','quoted','approved','in_progress','qc')`;
 
+// ---------------------------------------------------------------- ca thu ngân: biểu thức SQL dùng chung
+// Giá trị setting hiệu lực tại một ngày, thiếu thì lấy mặc định. Tham số đánh số: ?{b} = branch_id, ?{d} = biz_date.
+const settingSql = (key: string, def: string, b: number, d: number) => {
+  if (!/^[a-z_.]+$/.test(key) || !/^-?\d+$/.test(def)) throw new Error(`setting không hợp lệ: ${key}`);
+  return `COALESCE((SELECT json_extract(value_json, '$') FROM settings WHERE branch_id = ?${b} AND key = '${key}'
+            AND effective_from <= ?${d} ORDER BY effective_from DESC LIMIT 1), ${def})`;
+};
+// cash.require_session: mặc định bật (1). Tắt thì thu/chi tiền mặt không cần ca; có ca đang mở vẫn gắn vào ca.
+export const requireSessionSql = (b: number, d: number) => settingSql('cash.require_session', '1', b, d);
+// cash.variance_reason_threshold_vnd: |chênh lệch| lớn hơn ngưỡng thì bắt buộc lý do. Mặc định 0 = lệch bất kỳ đồng nào.
+const varianceThresholdSql = (b: number, d: number) => settingSql('cash.variance_reason_threshold_vnd', '0', b, d);
+// Ca đang mở của một người. ?{b} = branch_id, ?{u} = user_id.
+const openSessionSql = (b: number, u: number) => `SELECT id FROM cash_sessions WHERE branch_id = ?${b} AND holder_id = ?${u} AND status = 'open'`;
+// Số dư sổ sách của ca (alias s): quỹ đầu ca + thu - chi tiền mặt gắn ca.
+const SESSION_BALANCE = `(s.opening_float_vnd + COALESCE((SELECT SUM(CASE p.direction WHEN 'in' THEN p.amount_vnd ELSE -p.amount_vnd END)
+                          FROM payments p WHERE p.cash_session_id = s.id AND p.status = 'posted'), 0))`;
+
+export const DENOMINATIONS = [500_000, 200_000, 100_000, 50_000, 20_000, 10_000, 5_000, 2_000, 1_000, 500, 200, 100] as const;
+export type Denominations = Partial<Record<string, number>>;
+// Tổng tiền theo mệnh giá; bỏ mệnh giá có 0 tờ để JSON lưu gọn và so sánh được.
+export function countDenominations(d: Denominations): { total: number; json: string } {
+  const clean: Record<string, number> = {};
+  let total = 0;
+  for (const v of DENOMINATIONS) {
+    const n = d[String(v)] ?? 0;
+    if (!Number.isInteger(n) || n < 0) throw new Error(`số tờ không hợp lệ: ${v}`);
+    if (n > 0) { clean[String(v)] = n; total += v * n; }
+  }
+  for (const k of Object.keys(d)) if (!DENOMINATIONS.includes(Number(k) as any)) throw new Error(`mệnh giá không hợp lệ: ${k}`);
+  return { total, json: JSON.stringify(clean) };
+}
+
 // ---------------------------------------------------------------- dữ liệu nền cho test/probe
 export async function seedBranch(db: D1, p: { branchId: string; code: string; now: number; lockPolicy?: string | null }) {
   const stmts: Stmt[] = [
@@ -313,14 +345,18 @@ export async function cancelWorkOrder(db: D1, p: {
               FROM stock_moves WHERE stock_doc_id = ? GROUP BY warehouse_id, item_id) m
         WHERE b.warehouse_id = m.warehouse_id AND b.item_id = m.item_id`).bind(p.returnDocId),
 
-      // Tiền đã thu: hoàn (phiếu chi) hoặc chuyển thành tiền khách trả trước
+      // Tiền đã thu: hoàn (phiếu chi) hoặc chuyển thành tiền khách trả trước.
+      // Hoàn tiền mặt lấy từ két của người hủy: cash.require_session bật thì phải có ca đang mở.
+      guardExists(db, 'NO_OPEN_SESSION', `
+        SELECT 1 FROM work_orders WHERE id = ?1 AND paid_vnd > 0 AND ?2 = 'refund'
+          AND ${requireSessionSql(3, 4)} = 1 AND NOT EXISTS (${openSessionSql(3, 5)})`, p.woId, p.paidAction, p.branchId, d, p.userId),
       nextSeqIf(db, p.branchId, `PC-${y}`, `? = 'refund' AND EXISTS (SELECT 1 FROM work_orders WHERE id = ? AND paid_vnd > 0)`, p.paidAction, p.woId),
       db.prepare(`
-        INSERT INTO payments(id, branch_id, doc_no, direction, method, amount_vnd, biz_date, at, status)
-        SELECT ?1, ?2, 'PC-' || ?3 || '-' || printf('%05d', s.last_value), 'out', 'cash', w.paid_vnd, ?4, ?5, 'posted'
+        INSERT INTO payments(id, branch_id, doc_no, direction, method, amount_vnd, biz_date, at, status, cash_session_id)
+        SELECT ?1, ?2, 'PC-' || ?3 || '-' || printf('%05d', s.last_value), 'out', 'cash', w.paid_vnd, ?4, ?5, 'posted', (${openSessionSql(2, 8)})
         FROM work_orders w, sequences s
         WHERE w.id = ?6 AND w.paid_vnd > 0 AND ?7 = 'refund' AND s.branch_id = ?2 AND s.seq_key = 'PC-' || ?3`)
-        .bind(p.refundPaymentId, p.branchId, y, d, p.now, p.woId, p.paidAction),
+        .bind(p.refundPaymentId, p.branchId, y, d, p.now, p.woId, p.paidAction, p.userId),
       db.prepare(`
         INSERT INTO payment_allocations(id, branch_id, payment_id, target, work_order_id, amount_vnd)
         SELECT lower(hex(randomblob(16))), ?1, ?2, 'work_order', id, -paid_vnd FROM work_orders
@@ -434,13 +470,15 @@ export async function postCashPayment(db: D1, p: { key: string; branchId: string
   const seqKey = `PT-${d.slice(0, 4)}`;
   const A = p.amount;
   return withIdempotency(db, p.key, async () => {
+    // Phiếu gắn vào ca đang mở của người thu (nếu có). cash.require_session bật mà chưa mở ca thì guard chặn trước.
     const payStmt = db.prepare(`
-      INSERT INTO payments(id, branch_id, doc_no, direction, method, amount_vnd, biz_date, at, status, note)
-      SELECT ?1, ?2, ?3 || '-' || printf('%05d', last_value), 'in', 'cash', ?4, ?5, ?6, 'posted', ?7
-      FROM sequences WHERE branch_id = ?2 AND seq_key = ?3 RETURNING doc_no`)
-      .bind(p.paymentId, p.branchId, seqKey, A, d, p.now, p.note ?? null);
+      INSERT INTO payments(id, branch_id, doc_no, direction, method, amount_vnd, biz_date, at, status, note, cash_session_id)
+      SELECT ?1, ?2, ?3 || '-' || printf('%05d', last_value), 'in', 'cash', ?4, ?5, ?6, 'posted', ?7, (${openSessionSql(2, 8)})
+      FROM sequences WHERE branch_id = ?2 AND seq_key = ?3 RETURNING doc_no, cash_session_id`)
+      .bind(p.paymentId, p.branchId, seqKey, A, d, p.now, p.note ?? null, p.userId);
     const stmts = [
       idem(db, p.key, p.branchId, p.userId, 'pay.cash', p.paymentId, p.now),
+      guardExists(db, 'NO_OPEN_SESSION', `SELECT 1 WHERE ${requireSessionSql(1, 2)} = 1 AND NOT EXISTS (${openSessionSql(1, 3)})`, p.branchId, d, p.userId),
       guardNotExists(db, 'ORDER_NOT_PAYABLE',
         `SELECT 1 FROM work_orders WHERE id = ? AND branch_id = ? AND status <> 'cancelled' AND grand_total_vnd > paid_vnd`, p.woId, p.branchId),
       guardExists(db, 'AMOUNT_EXCEEDS_DUE', `SELECT 1 FROM work_orders WHERE id = ? AND ? > grand_total_vnd - paid_vnd`, p.woId, A),
@@ -459,7 +497,8 @@ export async function postCashPayment(db: D1, p: { key: string; branchId: string
         changes: { payment_id: p.paymentId, amount_vnd: A, note: p.note ?? null }, now: p.now }),
     ];
     const res = await runBatch(db, stmts);
-    return { paymentId: p.paymentId, docNo: res[stmts.indexOf(payStmt)].results[0].doc_no as string };
+    const r = res[stmts.indexOf(payStmt)].results[0];
+    return { paymentId: p.paymentId, docNo: r.doc_no as string, cashSessionId: (r.cash_session_id ?? null) as string | null };
   });
 }
 
@@ -481,4 +520,47 @@ export async function reopenWorkOrder(db: D1, p: { branchId: string; userId: str
     db.prepare(`UPDATE work_orders SET locked_at = NULL, lock_reason = NULL, reopen_count = reopen_count + 1, version = version + 1 WHERE id = ?`).bind(p.woId),
     audit(db, { branchId: p.branchId, actor: p.userId, entity: 'work_order', entityId: p.woId, action: 'reopen', reason: p.reason, now: p.now }),
   ]);
+}
+
+// ---------------------------------------------------------------- 2.6 Ca thu ngân: mở ca, chốt ca theo mệnh giá
+export async function openCashSession(db: D1, p: { key: string; branchId: string; userId: string; sessionId: string; denominations: Denominations; note?: string | null; now: number }) {
+  const d = bizDate(p.now);
+  const open = countDenominations(p.denominations);
+  return withIdempotency(db, p.key, async () => {
+    await runBatch(db, [
+      idem(db, p.key, p.branchId, p.userId, 'cash.open', p.sessionId, p.now),
+      guardExists(db, 'SESSION_ALREADY_OPEN', openSessionSql(1, 2), p.branchId, p.userId),
+      db.prepare(`INSERT INTO cash_sessions(id, branch_id, holder_id, opened_at, opening_float_vnd, opening_denominations_json, biz_date, status)
+                  VALUES (?, ?, ?, ?, ?, ?, ?, 'open')`).bind(p.sessionId, p.branchId, p.userId, p.now, open.total, open.json, d),
+      audit(db, { branchId: p.branchId, actor: p.userId, entity: 'cash_session', entityId: p.sessionId, action: 'open',
+        changes: { opening_float_vnd: open.total, denominations: JSON.parse(open.json), note: p.note ?? null }, now: p.now }),
+    ]);
+    return { sessionId: p.sessionId };
+  });
+}
+
+// Chốt ca: số dự kiến và chênh lệch tính ngay trong câu UPDATE từ sổ phiếu; trigger cs_close_balance kiểm lại.
+// Người chốt có thể là chính thu ngân hoặc quản lý (route kiểm quyền). Chênh lệch vượt ngưỡng phải có lý do.
+export async function closeCashSession(db: D1, p: {
+  key: string; branchId: string; userId: string; sessionId: string; denominations: Denominations; varianceReason?: string | null; now: number;
+}) {
+  const d = bizDate(p.now);
+  const counted = countDenominations(p.denominations);
+  const reason = p.varianceReason?.trim() || null;
+  return withIdempotency(db, p.key, async () => {
+    await runBatch(db, [
+      idem(db, p.key, p.branchId, p.userId, 'cash.close', p.sessionId, p.now),
+      guardNotExists(db, 'SESSION_NOT_OPEN', `SELECT 1 FROM cash_sessions WHERE id = ? AND branch_id = ? AND status = 'open'`, p.sessionId, p.branchId),
+      guardExists(db, 'VARIANCE_REASON_REQUIRED', `
+        SELECT 1 FROM cash_sessions s WHERE s.id = ?1 AND ?2 IS NULL AND ABS(?3 - ${SESSION_BALANCE}) > ${varianceThresholdSql(4, 5)}`,
+        p.sessionId, reason, counted.total, p.branchId, d),
+      db.prepare(`
+        UPDATE cash_sessions AS s SET status = 'closed', closed_at = ?2, closed_by = ?3, counted_vnd = ?4, denominations_json = ?5,
+          expected_vnd = ${SESSION_BALANCE}, variance_vnd = ?4 - ${SESSION_BALANCE}, variance_reason = ?6
+        WHERE s.id = ?1 AND s.status = 'open'`).bind(p.sessionId, p.now, p.userId, counted.total, counted.json, reason),
+      audit(db, { branchId: p.branchId, actor: p.userId, entity: 'cash_session', entityId: p.sessionId, action: 'close',
+        changes: { counted_vnd: counted.total, denominations: JSON.parse(counted.json) }, reason: reason ?? undefined, now: p.now }),
+    ]);
+    return { sessionId: p.sessionId };
+  });
 }

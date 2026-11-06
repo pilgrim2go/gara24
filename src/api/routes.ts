@@ -3,7 +3,7 @@ import { drizzle } from 'drizzle-orm/d1';
 import { and, eq, asc, gte, lte, desc } from 'drizzle-orm';
 import { z } from 'zod';
 import * as s from '../db/schema.ts';
-import { type D1, BizError, uuidv7, runBatch, audit, guardExists, guardNotExists } from '../lib.ts';
+import { type D1, BizError, uuidv7, bizDate, runBatch, audit, guardExists, guardNotExists } from '../lib.ts';
 import { registerDev } from './dev.ts';
 import * as ops from '../ops.ts';
 import { type Actor, type Perm, PERMS, can, seesCost, verifyAccessJwt, resolveActor } from './auth.ts';
@@ -288,10 +288,60 @@ export function api() {
     const r = await ops.postCashPayment(c.env.DB, { key: idemKey(c), branchId: a.branchId, userId: a.userId, woId, paymentId: uuidv7(now),
       amount: p.amount_vnd, note: p.note ?? null, now });
     const paymentId = 'replayed' in r ? r.resultRef : r.paymentId;
-    const pay = await c.env.DB.prepare(`SELECT id, doc_no, method, amount_vnd, biz_date, at, note FROM payments WHERE id = ? AND branch_id = ?`)
+    const pay = await c.env.DB.prepare(`SELECT id, doc_no, method, amount_vnd, biz_date, at, note, cash_session_id FROM payments WHERE id = ? AND branch_id = ?`)
       .bind(paymentId, a.branchId).first<any>();
     if (!pay) throw new HttpError(404, 'not_found');
     return c.json({ payment: v.PaymentView.parse(pay), order: await readOrder(c, woId) }, 'replayed' in r ? 200 : 201);
+  });
+
+  // ------------------------------------------------------------ ca thu ngân
+  // Quản lý, chủ, kế toán xem mọi ca của chi nhánh; thu ngân chỉ ca của mình (ca người khác trả 404, không lộ sự tồn tại).
+  app.post('/api/cash-sessions', async (c) => {
+    need(c, 'cash.session');
+    const a = c.get('actor'), p = await body(c, v.OpenCashSessionIn), now = Date.now();
+    const r = await ops.openCashSession(c.env.DB, { key: idemKey(c), branchId: a.branchId, userId: a.userId, sessionId: uuidv7(now),
+      denominations: p.denominations, note: p.note ?? null, now });
+    const id = 'replayed' in r ? r.resultRef : r.sessionId;
+    return c.json(await readSession(c, id, true), 'replayed' in r ? 200 : 201);
+  });
+
+  app.get('/api/cash-sessions/current', async (c) => {
+    need(c, 'cash.session');
+    const a = c.get('actor'), db = c.env.DB;
+    const req = await db.prepare(`SELECT ${ops.requireSessionSql(1, 2)} AS v`).bind(a.branchId, bizDate(Date.now())).first<{ v: number }>();
+    const open = await db.prepare(`SELECT id FROM cash_sessions WHERE branch_id = ? AND holder_id = ? AND status = 'open'`)
+      .bind(a.branchId, a.userId).first<{ id: string }>();
+    return c.json({ require_session: Number(req?.v) === 1, session: open ? await readSession(c, open.id, false) : null });
+  });
+
+  app.get('/api/cash-sessions', async (c) => {
+    if (!can(c.get('actor'), 'cash.session') && !can(c.get('actor'), 'cash.session.all')) throw new HttpError(403, 'forbidden');
+    const a = c.get('actor'), date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+    const q = z.object({ status: z.enum(['open', 'closed', 'all']).default('all'), from: date.optional(), to: date.optional() }).safeParse(c.req.query());
+    if (!q.success) throw new HttpError(400, 'invalid_input');
+    const all = can(a, 'cash.session.all');
+    const rows = await sessionRows(c, `s.branch_id = ?1 AND (?2 = 1 OR s.holder_id = ?3) AND (?4 = 'all' OR s.status = ?4)
+      AND (?5 IS NULL OR s.biz_date >= ?5) AND (?6 IS NULL OR s.biz_date <= ?6) ORDER BY s.opened_at DESC LIMIT 200`,
+      a.branchId, all ? 1 : 0, a.userId, q.data.status, q.data.from ?? null, q.data.to ?? null);
+    return c.json(rows);
+  });
+
+  app.get('/api/cash-sessions/:id', async (c) => {
+    if (!can(c.get('actor'), 'cash.session') && !can(c.get('actor'), 'cash.session.all')) throw new HttpError(403, 'forbidden');
+    return c.json(await readSession(c, c.req.param('id'), true));
+  });
+
+  // Chốt ca: thu ngân chốt ca của mình; chủ/quản lý chốt hộ được. Số dự kiến tính ở DB, client chỉ gửi số tờ đếm được.
+  app.post('/api/cash-sessions/:id/close', async (c) => {
+    const a = c.get('actor'), id = c.req.param('id');
+    if (!can(a, 'cash.session')) throw new HttpError(403, 'forbidden');
+    const p = await body(c, v.CloseCashSessionIn);
+    const own = await c.env.DB.prepare(`SELECT holder_id FROM cash_sessions WHERE id = ? AND branch_id = ?`).bind(id, a.branchId).first<{ holder_id: string }>();
+    if (!own || (own.holder_id !== a.userId && !can(a, 'cash.session.all'))) throw new HttpError(404, 'not_found');
+    if (own.holder_id !== a.userId && !can(a, 'cash.session.manage')) throw new HttpError(403, 'forbidden');
+    await ops.closeCashSession(c.env.DB, { key: idemKey(c), branchId: a.branchId, userId: a.userId, sessionId: id,
+      denominations: p.denominations, varianceReason: p.variance_reason ?? null, now: Date.now() });
+    return c.json(await readSession(c, id, true));
   });
 
   // Nhập kho mua vào. Chỉ thủ kho/quản lý/chủ; cố vấn, thợ, thu ngân bị chặn vì phiếu có giá nhập.
@@ -407,6 +457,43 @@ async function readReceipt(c: C, docId: string) {
   if (!d) throw new HttpError(404, 'not_found');
   const { results } = await db.prepare(`SELECT item_id, qty_delta_m AS qty_m, total_cost_vnd FROM stock_moves WHERE stock_doc_id = ? ORDER BY rowid`).bind(docId).all<any>();
   return v.StockReceiptView.parse({ ...d, lines: results, total_cost_vnd: results.reduce((x, l) => x + l.total_cost_vnd, 0) });
+}
+
+// ------------------------------------------------------------ đọc ca thu ngân
+// Số thu/chi tính từ sổ phiếu, không lưu sẵn: ca đang mở luôn ra số dư hiện tại.
+async function sessionRows(c: C, where: string, ...args: unknown[]) {
+  const { results } = await c.env.DB.prepare(`
+    SELECT s.id, s.holder_id, COALESCE(u.full_name, s.holder_id) AS holder_name, s.status, s.biz_date, s.opened_at,
+           s.opening_float_vnd, s.opening_denominations_json, s.counted_vnd, s.variance_vnd, s.denominations_json, s.variance_reason,
+           s.closed_at, s.closed_by, cu.full_name AS closed_by_name, s.expected_vnd AS stored_expected,
+           COALESCE(t.cin, 0) AS cash_in_vnd, COALESCE(t.cout, 0) AS cash_out_vnd, COALESCE(t.n, 0) AS payment_count
+    FROM cash_sessions s
+    LEFT JOIN users u ON u.id = s.holder_id
+    LEFT JOIN users cu ON cu.id = s.closed_by
+    LEFT JOIN (SELECT cash_session_id, SUM(CASE WHEN direction = 'in' THEN amount_vnd ELSE 0 END) cin,
+                      SUM(CASE WHEN direction = 'out' THEN amount_vnd ELSE 0 END) cout, COUNT(*) n
+               FROM payments WHERE cash_session_id IS NOT NULL AND status = 'posted' GROUP BY cash_session_id) t ON t.cash_session_id = s.id
+    WHERE ${where}`).bind(...args).all<any>();
+  return results.map((r) => v.CashSessionView.parse({
+    ...r,
+    expected_vnd: r.status === 'closed' ? r.stored_expected : r.opening_float_vnd + r.cash_in_vnd - r.cash_out_vnd,
+    opening_denominations: r.opening_denominations_json ? JSON.parse(r.opening_denominations_json) : null,
+    denominations: r.denominations_json ? JSON.parse(r.denominations_json) : null,
+  }));
+}
+
+async function readSession(c: C, id: string, withPayments: boolean) {
+  const a = c.get('actor');
+  const [row] = await sessionRows(c, `s.id = ?1 AND s.branch_id = ?2 AND (?3 = 1 OR s.holder_id = ?4)`,
+    id, a.branchId, can(a, 'cash.session.all') ? 1 : 0, a.userId);
+  if (!row) throw new HttpError(404, 'not_found');
+  if (!withPayments) return row;
+  const { results } = await c.env.DB.prepare(`
+    SELECT p.id, p.doc_no, p.direction, p.amount_vnd, p.at, p.note,
+           (SELECT w.order_no FROM payment_allocations pa JOIN work_orders w ON w.id = pa.work_order_id
+            WHERE pa.payment_id = p.id AND pa.work_order_id IS NOT NULL LIMIT 1) AS order_no
+    FROM payments p WHERE p.cash_session_id = ?1 AND p.branch_id = ?2 AND p.status = 'posted' ORDER BY p.at, p.rowid`).bind(id, a.branchId).all<any>();
+  return v.CashSessionDetailView.parse({ ...row, payments: results });
 }
 
 // Tên người thao tác: lấy từ users (bảng u đã LEFT JOIN). 'system' là Worker tự ghi (webhook); mã lạ trả lại chính mã.

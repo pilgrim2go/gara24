@@ -583,6 +583,9 @@ export const paymentIntents = sqliteTable('payment_intents', {
   bankTxnId: text('bank_txn_id').references(() => bankTransactions.id),
 }, (t) => [inList('pi_status_chk', t.status, ['pending', 'matched', 'expired', 'void'])]);
 
+// Ca thu ngân (G1-06). Mỗi người tối đa một ca đang mở trong một chi nhánh. Đếm tiền theo mệnh giá lúc mở và lúc chốt:
+// *_denominations_json = {"500000": số tờ, ...}. Lúc chốt: expected = quỹ đầu ca + thu tiền mặt - chi tiền mặt gắn ca,
+// variance = counted - expected. Trigger trong migration chặn ghi sai các số này và chặn sửa ca đã chốt.
 export const cashSessions = sqliteTable('cash_sessions', {
   id: text('id').primaryKey(),
   branchId: branchRef(),
@@ -596,7 +599,13 @@ export const cashSessions = sqliteTable('cash_sessions', {
   denominationsJson: text('denominations_json'),
   closedBy: text('closed_by'),
   status: text('status', { enum: ['open', 'closed'] }).notNull(),
-}, (t) => [uniqueIndex('cs_open_uq').on(t.branchId, t.holderId).where(sql`status = 'open'`)]);
+  bizDate: text('biz_date'),                                   // ngày mở ca, giờ VN
+  openingDenominationsJson: text('opening_denominations_json'),
+  varianceReason: text('variance_reason'),
+}, (t) => [
+  uniqueIndex('cs_open_uq').on(t.branchId, t.holderId).where(sql`status = 'open'`),
+  index('cs_branch_opened_idx').on(t.branchId, t.openedAt),
+]);
 
 export const payments = sqliteTable('payments', {
   id: text('id').primaryKey(),

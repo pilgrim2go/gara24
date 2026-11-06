@@ -63,6 +63,8 @@ describe('Thu tiền mặt và nhập kho qua API', () => {
       seedUser(db, b.branchId, ['cashier'], 'thungan'),
     ]);
     item = await newItem(db, b, 'MAPHANH');
+    // cash.require_session mặc định bật: người thu tiền mặt phải có ca đang mở.
+    for (const who of [cashier, owner]) assert.equal((await call('POST', '/api/cash-sessions', who, { denominations: {} })).status, 201);
   });
 
   it('1. thu một phần rồi thu đủ: phiếu PT, partial → paid, khóa lệnh, cộng cash_in_vnd và collected_vnd', async () => {
